@@ -49,9 +49,13 @@ LLM_MODEL=deepseek-chat
 
 ## 运行
 
+方法一：
 ```bash
 python main.py
 ```
+
+方法二：
+双击run.bat
 
 程序每次启动新任务前，会自动清空 `input/` 和 `output/` 目录中的历史文件。
 
