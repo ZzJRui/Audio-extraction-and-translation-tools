@@ -2,6 +2,14 @@ from pathlib import Path
 import shutil
 import os
 
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    AuthenticationError,
+    RateLimitError,
+)
+
 from config import AppConfig, save_env_value
 from subtitle import (
     build_bilingual_subtitles,
@@ -44,6 +52,13 @@ def prompt_subtitle_mode() -> str:
         if mode:
             return mode
         print("输入无效，请输入 1、2 或 3。")
+
+
+def prompt_scene_if_needed(subtitle_mode: str) -> str | None:
+    if subtitle_mode == "original":
+        print("已选择原文字幕，跳过翻译情景输入。")
+        return None
+    return prompt_text("翻译情景", "日常对话")
 
 
 def ensure_output_dir(path: Path) -> None:
@@ -89,7 +104,46 @@ def validate_runtime(config: AppConfig) -> None:
         raise EnvironmentError("未检测到 ffmpeg，请先安装并加入系统 PATH。")
 
 
-def main() -> None:
+def build_error_message(exc: Exception) -> tuple[str, str | None]:
+    if isinstance(exc, FileNotFoundError):
+        return (
+            f"处理失败：找不到音频文件：{exc}",
+            "建议：请检查路径是否正确，Windows 路径可直接粘贴，带引号也可以。",
+        )
+    if isinstance(exc, PermissionError):
+        return (
+            "处理失败：文件正在被占用或没有访问权限。",
+            "建议：关闭占用该文件的程序后重试。",
+        )
+    if isinstance(exc, AuthenticationError):
+        return (
+            "处理失败：翻译接口认证失败。",
+            "建议：请检查 .env 中的 LLM_API_KEY 是否正确。",
+        )
+    if isinstance(exc, RateLimitError):
+        return (
+            "处理失败：翻译接口请求过于频繁，或当前额度不足。",
+            "建议：稍后重试，或检查 API 账户额度。",
+        )
+    if isinstance(exc, (APIConnectionError, APITimeoutError)):
+        return (
+            "处理失败：无法连接翻译服务。",
+            "建议：请检查当前网络，或稍后重试。",
+        )
+    if isinstance(exc, APIError):
+        return (
+            "处理失败：翻译服务暂时不可用。",
+            "建议：请稍后重试。",
+        )
+    if isinstance(exc, (ValueError, RuntimeError, EnvironmentError)):
+        return (f"处理失败：{exc}", None)
+    return (
+        "处理失败：程序遇到未预期的问题。",
+        "建议：请重试一次；如果问题持续存在，再把错误现象反馈出来。",
+    )
+
+
+def run_app() -> None:
     project_root = Path(__file__).resolve().parent
     configure_runtime_env()
     configure_local_ffmpeg(project_root)
@@ -105,8 +159,8 @@ def main() -> None:
         config = AppConfig()
 
     audio_path = prompt_text("音频路径", "input/audio.mp3")
-    scene = prompt_text("翻译情景", "日常对话")
     subtitle_mode = prompt_subtitle_mode()
+    scene = prompt_scene_if_needed(subtitle_mode)
 
     ensure_output_dir(output_dir)
 
@@ -117,7 +171,7 @@ def main() -> None:
     translations: list[str] | None = None
     if subtitle_mode in {"translation", "bilingual"}:
         print("2/3 正在进行情景翻译...")
-        translations = translate_segments(segments, scene, config)
+        translations = translate_segments(segments, scene or "日常对话", config)
         print("翻译完成。")
     else:
         print("2/3 已跳过翻译，当前仅输出原文字幕。")
@@ -140,6 +194,20 @@ def main() -> None:
         print("已生成: bilingual.srt")
 
     print(f"已输出到目录: {output_dir.resolve()}")
+
+
+def main() -> None:
+    try:
+        run_app()
+    except KeyboardInterrupt:
+        print("\n已取消操作。")
+        raise SystemExit(1)
+    except Exception as exc:
+        message, suggestion = build_error_message(exc)
+        print(message)
+        if suggestion:
+            print(suggestion)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

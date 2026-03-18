@@ -73,12 +73,14 @@ python main.py
 3. 双语字幕
 ```
 
+如果选择原文字幕，程序会自动跳过“翻译情景”输入。
+
 示例输入：
 
 ```text
 音频路径: D:\Audio\audio.mp3
+请输入数字 [1/2/3]: 3
 翻译情景: 排球比赛解说
-字幕类型: 3
 ```
 
 ## 输出文件
@@ -88,3 +90,13 @@ python main.py
 - 选择原文时：`output/original.srt`
 - 选择译文时：`output/translation.srt`
 - 选择双语时：`output/bilingual.srt`
+
+## 错误提示
+
+程序默认使用简洁中文提示，不会直接打印 Python 报错堆栈。
+
+例如：
+
+- 找不到音频文件时，会提示检查路径
+- API Key 无效时，会提示检查 `.env`
+- 网络异常时，会提示稍后重试
