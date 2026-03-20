@@ -1,6 +1,6 @@
 # 音频字幕提取与翻译工具
 
-一个命令行 Python 小工具，用于将录音自动转为字幕，并根据指定情景生成中文翻译字幕与双语字幕。
+一个支持命令行和桌面 GUI 的本地字幕工具，用于将录音自动转为字幕，并根据指定情景生成中文翻译字幕与双语字幕。
 
 ## 功能
 
@@ -8,6 +8,7 @@
 - 可按需生成原文、译文或双语其中一种字幕
 - 使用 DeepSeek 或 OpenAI 兼容接口进行情景翻译
 - 只输出当前选择的 `SRT` 文件，减少无用结果
+- 优先使用 `PySide6` 桌面界面；若当前环境的 Qt 运行库异常，会自动回退到内置 Tkinter 界面
 
 ## 项目结构
 
@@ -24,6 +25,8 @@ project/
 ├─ translate.py
 ├─ subtitle.py
 ├─ config.py
+├─ app_service.py
+├─ gui.py
 └─ requirements.txt
 ```
 
@@ -49,39 +52,30 @@ LLM_MODEL=deepseek-chat
 
 ## 运行
 
-方法一：
+推荐方式：
+
+双击 `run_gui.bat`
+
+或者：
+
+```bash
+python gui.py
+```
+
+说明：
+
+- 若本机 `PySide6` 环境正常，会启动增强版桌面界面
+- 若 `PySide6` 因 Qt DLL 问题无法加载，会自动回退到内置 Tkinter 图形界面
+
+备用方式：
+
 ```bash
 python main.py
 ```
 
-方法二：
-双击run.bat
+GUI 模式下每次开始任务前，只会自动清理 `output/` 目录中的历史字幕文件，不会删除你选择的原始音频。
 
-程序每次启动新任务前，会自动清空 `input/` 和 `output/` 目录中的历史文件。
-
-因此建议：
-
-- 不要把需要长期保存的音频放在 `input/`
-- 当前任务的音频可以放在项目外任意位置，然后输入完整路径
-- 如果你仍想使用 `input/`，请在程序启动后的提示阶段再准备本次音频
-
-程序会继续让你选择字幕输出类型：
-
-```text
-1. 原文字幕
-2. 译文字幕
-3. 双语字幕
-```
-
-如果选择原文字幕，程序会自动跳过“翻译情景”输入。
-
-示例输入：
-
-```text
-音频路径: D:\Audio\audio.mp3
-请输入数字 [1/2/3]: 3
-翻译情景: 排球比赛解说
-```
+CLI 模式下仍保留旧逻辑：启动后会清理 `input/` 和 `output/`。
 
 ## 输出文件
 
@@ -100,3 +94,24 @@ python main.py
 - 找不到音频文件时，会提示检查路径
 - API Key 无效时，会提示检查 `.env`
 - 网络异常时，会提示稍后重试
+
+## GUI 界面说明
+
+桌面版采用单窗口布局：
+
+- 左侧：音频选择、字幕类型、翻译情景、开始生成
+- 右侧：运行日志、输出文件、字幕预览
+- 底部：打开输出目录、重新开始、退出
+
+如果选择原文字幕，翻译情景输入框会自动禁用。
+
+## 打包为 EXE
+
+推荐使用 `PyInstaller` 的 `onedir` 模式：
+
+```bash
+pip install pyinstaller
+pyinstaller --noconsole --onedir --name AudioSubtitleTool --add-data "tools;tools" --add-data ".env.example;." gui.py
+```
+
+打包完成后，直接双击生成的 `AudioSubtitleTool.exe` 即可打开桌面软件。

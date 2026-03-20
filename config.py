@@ -1,10 +1,25 @@
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 
-def load_dotenv(dotenv_path: str = ".env") -> None:
-    env_file = Path(dotenv_path)
+def get_app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def get_runtime_root() -> Path:
+    env_value = os.getenv("APP_RUNTIME_ROOT", "").strip()
+    if env_value:
+        return Path(env_value)
+    app_root = get_app_root()
+    return app_root.parent / f"{app_root.name}_runtime"
+
+
+def load_dotenv(dotenv_path: str | Path | None = None) -> None:
+    env_file = Path(dotenv_path) if dotenv_path else get_app_root() / ".env"
     if not env_file.exists():
         return
 
@@ -16,8 +31,8 @@ def load_dotenv(dotenv_path: str = ".env") -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
-def save_env_value(key: str, value: str, dotenv_path: str = ".env") -> None:
-    env_file = Path(dotenv_path)
+def save_env_value(key: str, value: str, dotenv_path: str | Path | None = None) -> None:
+    env_file = Path(dotenv_path) if dotenv_path else get_app_root() / ".env"
     lines: list[str] = []
     if env_file.exists():
         lines = env_file.read_text(encoding="utf-8").splitlines()
@@ -58,4 +73,4 @@ class AppConfig:
 
     @property
     def output_dir(self) -> Path:
-        return Path(self.output_dir_name)
+        return get_app_root() / self.output_dir_name

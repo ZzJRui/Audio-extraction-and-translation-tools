@@ -1,0 +1,14 @@
+.env
+__pycache__/
+.cache/
+.tmp/
+.runtime/
+.pip-cache/
+.py312libs/
+.py312runtime/
+.qt312/
+.qtcopy/
+.venv_gui/
+tools/
+output/
+input/
