@@ -119,7 +119,6 @@ def configure_local_ffmpeg(project_root: Path) -> None:
 
 
 def configure_runtime_env() -> None:
-    # Work around duplicate OpenMP runtime loading on some Windows Python setups.
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 
@@ -154,6 +153,10 @@ def validate_task_request(
             raise ValueError("翻译情景不能为空。")
         if not config.llm_api_key:
             raise ValueError("未配置 LLM_API_KEY，无法生成译文或双语字幕。")
+        if not config.llm_base_url:
+            raise ValueError("未配置 LLM_BASE_URL，请先在 .env 中填写模型接口地址。")
+        if not config.llm_model:
+            raise ValueError("未配置 LLM_MODEL，请先在 .env 中填写模型名称。")
     else:
         normalized_scene = ""
 
@@ -198,18 +201,12 @@ def execute_subtitle_task(
         write_srt_file(output_file, build_original_subtitles(segments))
     elif subtitle_mode == "translation":
         output_file = output_dir / "translation.srt"
-        write_srt_file(
-            output_file,
-            build_translation_subtitles(segments, translations or []),
-        )
+        write_srt_file(output_file, build_translation_subtitles(segments, translations or []))
     else:
         output_file = output_dir / "bilingual.srt"
-        write_srt_file(
-            output_file,
-            build_bilingual_subtitles(segments, translations or []),
-        )
+        write_srt_file(output_file, build_bilingual_subtitles(segments, translations or []))
 
-    _emit_progress(progress_callback, f"已生成: {output_file.name}")
+    _emit_progress(progress_callback, f"已生成 {output_file.name}")
     _emit_progress(progress_callback, f"已输出到目录: {output_dir.resolve()}")
 
     return TaskResult(
@@ -224,9 +221,8 @@ def execute_subtitle_task(
 
 def build_error_message(exc: Exception) -> tuple[str, str | None]:
     if isinstance(exc, FileNotFoundError):
-        missing_path = str(exc).replace("找不到音频文件:", "").strip()
         return (
-            f"处理失败：找不到音频文件：{missing_path}",
+            f"处理失败：找不到音频文件：{exc}",
             "建议：请检查路径是否正确，Windows 路径可直接粘贴，带引号也可以。",
         )
     if isinstance(exc, PermissionError):
@@ -237,7 +233,7 @@ def build_error_message(exc: Exception) -> tuple[str, str | None]:
     if isinstance(exc, AuthenticationError):
         return (
             "处理失败：翻译接口认证失败。",
-            "建议：请检查 .env 中的 LLM_API_KEY 是否正确。",
+            "建议：请检查 .env 中的 LLM_API_KEY、LLM_BASE_URL 和 LLM_MODEL 是否正确。",
         )
     if isinstance(exc, RateLimitError):
         return (

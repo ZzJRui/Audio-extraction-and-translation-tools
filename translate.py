@@ -17,7 +17,6 @@ def _build_prompt(scene: str, batch: list[TranscriptSegment]) -> str:
     payload = [{"id": item.index, "text": item.text} for item in batch]
     return f"""
 你是一名专业字幕翻译，需要把输入文本翻译成适合字幕阅读的自然中文。
-
 翻译情景：{scene}
 
 要求：
@@ -39,9 +38,11 @@ def translate_segments(
     config: AppConfig,
 ) -> list[str]:
     if not config.llm_api_key:
-        raise ValueError(
-            "缺少 LLM_API_KEY 环境变量，请先配置 DeepSeek 或 OpenAI 兼容接口的 API Key。"
-        )
+        raise ValueError("缺少 LLM_API_KEY 环境变量，请先在 .env 中配置 API Key。")
+    if not config.llm_base_url:
+        raise ValueError("缺少 LLM_BASE_URL 环境变量，请先在 .env 中配置模型接口地址。")
+    if not config.llm_model:
+        raise ValueError("缺少 LLM_MODEL 环境变量，请先在 .env 中配置模型名称。")
 
     client = OpenAI(
         api_key=config.llm_api_key,

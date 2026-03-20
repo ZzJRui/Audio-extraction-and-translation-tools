@@ -65,8 +65,8 @@ class AppConfig:
     whisper_compute_type: str = os.getenv("WHISPER_COMPUTE_TYPE", "auto")
     source_language: str | None = os.getenv("SOURCE_LANGUAGE") or None
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
-    llm_base_url: str = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
-    llm_model: str = os.getenv("LLM_MODEL", "deepseek-chat")
+    llm_base_url: str = os.getenv("LLM_BASE_URL", "")
+    llm_model: str = os.getenv("LLM_MODEL", "")
     llm_temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.3"))
     translation_batch_size: int = int(os.getenv("TRANSLATION_BATCH_SIZE", "12"))
     output_dir_name: str = os.getenv("OUTPUT_DIR", "output")

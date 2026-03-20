@@ -40,15 +40,16 @@ pip install -r requirements.txt
 
 ## 配置 API
 
-复制 `.env.example` 的内容到你的环境变量配置中，至少要设置：
+复制 `.env.example` 的内容到 `.env`，并手动填写下面这三项：
 
 ```bash
 LLM_API_KEY=你的Key
-LLM_BASE_URL=https://api.deepseek.com
-LLM_MODEL=deepseek-chat
+LLM_BASE_URL=你的模型接口地址
+LLM_MODEL=你的模型名称
 ```
 
-如果你使用 OpenAI 兼容网关，也可以改成自己的 `LLM_BASE_URL` 和模型名。
+程序不再为 `LLM_BASE_URL` 和 `LLM_MODEL` 提供默认值。
+如果你要切换 DeepSeek、OpenAI 兼容网关或其他服务，直接修改 `.env` 即可。
 
 ## 运行
 
