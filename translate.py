@@ -6,6 +6,11 @@ from openai import OpenAI
 from config import AppConfig
 from transcribe import TranscriptSegment
 
+TRANSLATION_SYSTEM_MESSAGE = (
+    "你是专业字幕翻译助手。输出必须是合法 JSON，"
+    "只能返回翻译结果，不要添加解释、备注或代码块。"
+)
+
 
 def _chunked(items: list[TranscriptSegment], size: int):
     iterator = iter(items)
@@ -16,20 +21,28 @@ def _chunked(items: list[TranscriptSegment], size: int):
 def _build_prompt(scene: str, batch: list[TranscriptSegment]) -> str:
     payload = [{"id": item.index, "text": item.text} for item in batch]
     return f"""
-你是一名专业字幕翻译，需要把输入文本翻译成适合字幕阅读的自然中文。
+你是一名专业字幕翻译，需要把输入英文翻译成适合中文字幕阅读的自然中文。
 翻译情景：{scene}
 
 要求：
-1. 保留原意，不要遗漏信息。
-2. 结合情景使用合适术语和表达风格。
-3. 语言自然、简洁，适合字幕阅读。
-4. 只翻译文本，不补充解释，不加括号说明。
-5. 返回 JSON 对象，格式必须是 {{"items": [{{"id": 1, "translation": "..."}}]}}。
-6. 输出条目数量和输入完全一致，id 必须对应。
+1. 自然达意优先，中文要顺口、准确、适合字幕阅读。
+2. 不得漏译、误译，不得擅自扩写或改变事实。
+3. 结合上下文理解同批次内容里的指代、语气、情绪和场景术语，再决定措辞。
+4. 保留人物称呼、专有名词、术语和语气强弱；必要时用更自然的中文表达同样意思。
+5. 只输出翻译，不要加括号说明、解释性补充或自由发挥。
+6. 返回 JSON 对象，格式必须是 {{"items": [{{"id": 1, "translation": "..."}}]}}。
+7. 输出条目数量必须和输入完全一致，id 必须一一对应。
 
 待翻译内容：
 {json.dumps(payload, ensure_ascii=False, indent=2)}
 """.strip()
+
+
+def build_translation_messages(scene: str, batch: list[TranscriptSegment]) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": TRANSLATION_SYSTEM_MESSAGE},
+        {"role": "user", "content": _build_prompt(scene, batch)},
+    ]
 
 
 def translate_segments(
@@ -55,16 +68,7 @@ def translate_segments(
             model=config.llm_model,
             temperature=config.llm_temperature,
             response_format={"type": "json_object"},
-            messages=[
-                {
-                    "role": "system",
-                    "content": "你是专业字幕翻译助手，输出必须是合法 JSON。",
-                },
-                {
-                    "role": "user",
-                    "content": _build_prompt(scene, batch),
-                },
-            ],
+            messages=build_translation_messages(scene, batch),
         )
 
         content = completion.choices[0].message.content or ""

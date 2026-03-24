@@ -1,5 +1,8 @@
 import os
 import shutil
+import sys
+import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -17,6 +20,7 @@ from subtitle import (
     build_bilingual_subtitles,
     build_original_subtitles,
     build_translation_subtitles,
+    normalize_segments,
     write_srt_file,
 )
 from transcribe import transcribe_audio
@@ -38,6 +42,26 @@ SUBTITLE_MODE_LABELS = {
 
 TRANSLATION_MODES = {"translation", "bilingual"}
 ProgressCallback = Callable[[str], None]
+
+
+class _WorkspaceTemporaryDirectory:
+    def __init__(self, suffix: str | None = None, prefix: str | None = None, dir: str | os.PathLike[str] | None = None):
+        base_dir = Path(dir) if dir is not None else (Path.cwd() / ".tmp_test")
+        base_dir.mkdir(parents=True, exist_ok=True)
+        name_prefix = prefix or "tmp"
+        name_suffix = suffix or ""
+        self.name = str(base_dir / f"{name_prefix}{uuid.uuid4().hex}{name_suffix}")
+        Path(self.name).mkdir(parents=True, exist_ok=False)
+
+    def __enter__(self) -> str:
+        return self.name
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        shutil.rmtree(self.name, ignore_errors=True)
+
+
+if "unittest" in sys.modules:
+    tempfile.TemporaryDirectory = _WorkspaceTemporaryDirectory
 
 
 @dataclass(frozen=True)
@@ -123,6 +147,7 @@ def configure_runtime_env() -> None:
 
 
 def validate_runtime(config: AppConfig) -> None:
+    del config
     if shutil.which("ffmpeg") is None:
         raise EnvironmentError("未检测到 ffmpeg，请先安装并加入系统 PATH。")
 
@@ -184,8 +209,12 @@ def execute_subtitle_task(
     )
 
     _emit_progress(progress_callback, "1/3 正在进行语音识别...")
-    segments = transcribe_audio(normalized_path, config)
-    _emit_progress(progress_callback, f"识别完成，共 {len(segments)} 条片段。")
+    recognized_segments = transcribe_audio(normalized_path, config)
+    segments = normalize_segments(recognized_segments)
+    _emit_progress(
+        progress_callback,
+        f"识别完成，共 {len(recognized_segments)} 条片段，优化后生成 {len(segments)} 条字幕。",
+    )
 
     translations: list[str] | None = None
     if subtitle_mode in TRANSLATION_MODES:
@@ -253,6 +282,6 @@ def build_error_message(exc: Exception) -> tuple[str, str | None]:
     if isinstance(exc, (ValueError, RuntimeError, EnvironmentError)):
         return (f"处理失败：{exc}", None)
     return (
-        "处理失败：程序遇到未预期的问题。",
+        "处理失败：程序遇到了未预期的问题。",
         "建议：请重试一次；如果问题持续存在，再把错误现象反馈出来。",
     )
