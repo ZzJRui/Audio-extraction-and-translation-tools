@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from config import AppConfig, get_app_root
+from error_messages import build_gui_error_message, parse_backend_error
 
 APP_ROOT = get_app_root()
 BACKEND_SCRIPT = APP_ROOT / "backend_runner.py"
@@ -54,44 +55,7 @@ def validate_task_request(audio_path: str, subtitle_mode: str, scene: str | None
         if not (scene or "").strip():
             raise ValueError("翻译情景不能为空。")
         if not AppConfig().llm_api_key.strip():
-            raise ValueError("未配置 LLM_API_KEY，无法生成译文或双语字幕。")
-
-
-def build_error_message(exc: Exception) -> tuple[str, str | None]:
-    if isinstance(exc, FileNotFoundError):
-        return (
-            f"处理失败：找不到音频文件：{exc}",
-            "建议：请检查路径是否正确，Windows 路径可以直接粘贴，带引号也可以。",
-        )
-    if isinstance(exc, PermissionError):
-        return (
-            "处理失败：文件正在被占用，或者当前程序没有访问权限。",
-            "建议：请关闭占用该文件的程序后重试。",
-        )
-    if isinstance(exc, ValueError):
-        return (f"处理失败：{exc}", None)
-    return (
-        f"处理失败：{exc}",
-        "建议：请重试一次；如果问题持续存在，再把错误提示发给我。",
-    )
-
-
-def parse_backend_error(stderr_text: str) -> tuple[str, str | None]:
-    text = stderr_text.strip() or "后端返回了空错误信息。"
-    if text.startswith("FileNotFoundError:"):
-        return build_error_message(FileNotFoundError(text.split(":", 1)[1].strip()))
-    if text.startswith("ValueError:"):
-        return build_error_message(ValueError(text.split(":", 1)[1].strip()))
-    lowered = text.lower()
-    if "authentication" in lowered or "api key" in lowered or "unauthorized" in lowered:
-        return ("处理失败：翻译接口认证失败。", "建议：请检查 .env 里的 LLM_API_KEY 是否正确。")
-    if "timeout" in lowered or "connection" in lowered:
-        return ("处理失败：无法连接翻译服务。", "建议：请检查当前网络，或稍后再试。")
-    if "rate limit" in lowered or "quota" in lowered:
-        return ("处理失败：翻译接口请求过于频繁，或当前额度不足。", "建议：请稍后重试，或检查 API 账户额度。")
-    if "ffmpeg" in lowered:
-        return ("处理失败：未检测到可用的 ffmpeg。", "建议：请确认项目的 ffmpeg 工具目录完整，或把 ffmpeg 加入 PATH。")
-    return (f"处理失败：{text}", "建议：请查看网络、模型配置和依赖环境后重试。")
+            raise ValueError("\u672a\u914d\u7f6e LLM_API_KEY\uff0c\u65e0\u6cd5\u751f\u6210\u8bd1\u6587\u6216\u53cc\u8bed\u5b57\u5e55\u3002")
 
 
 def prepare_output_dir(output_dir: Path) -> None:
@@ -145,7 +109,7 @@ class TaskWorker(QObject):
             raw = json.loads(result.stdout)
             self.finished.emit(raw)
         except Exception as exc:
-            message, suggestion = build_error_message(exc)
+            message, suggestion = build_gui_error_message(exc)
             self.failed.emit(message if not suggestion else f"{message}\n{suggestion}")
 
 
@@ -335,7 +299,7 @@ class MainWindow(QMainWindow):
         try:
             validate_task_request(audio_path, subtitle_mode, scene)
         except Exception as exc:
-            message, suggestion = build_error_message(exc)
+            message, suggestion = build_gui_error_message(exc)
             QMessageBox.critical(self, "无法开始任务", message if not suggestion else f"{message}\n{suggestion}")
             return
 

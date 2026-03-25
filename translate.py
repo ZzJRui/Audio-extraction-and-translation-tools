@@ -1,15 +1,17 @@
-import json
+﻿import json
 from itertools import islice
 
 from openai import OpenAI
 
 from config import AppConfig
 from transcribe import TranscriptSegment
+from text_safety import sanitize_utf8_text
 
 TRANSLATION_SYSTEM_MESSAGE = (
     "你是专业字幕翻译助手。输出必须是合法 JSON，"
     "只能返回翻译结果，不要添加解释、备注或代码块。"
 )
+MAX_MISSING_ITEM_RETRIES = 2
 
 
 def _chunked(items: list[TranscriptSegment], size: int):
@@ -19,10 +21,11 @@ def _chunked(items: list[TranscriptSegment], size: int):
 
 
 def _build_prompt(scene: str, batch: list[TranscriptSegment]) -> str:
-    payload = [{"id": item.index, "text": item.text} for item in batch]
+    safe_scene = sanitize_utf8_text(scene)
+    payload = [{"id": item.index, "text": sanitize_utf8_text(item.text)} for item in batch]
     return f"""
 你是一名专业字幕翻译，需要把输入英文翻译成适合中文字幕阅读的自然中文。
-翻译情景：{scene}
+翻译情景：{safe_scene}
 
 要求：
 1. 自然达意优先，中文要顺口、准确、适合字幕阅读。
@@ -45,6 +48,42 @@ def build_translation_messages(scene: str, batch: list[TranscriptSegment]) -> li
     ]
 
 
+def _request_translation_content(
+    client: OpenAI,
+    scene: str,
+    batch: list[TranscriptSegment],
+    config: AppConfig,
+) -> str:
+    completion = client.chat.completions.create(
+        model=config.llm_model,
+        temperature=config.llm_temperature,
+        response_format={"type": "json_object"},
+        messages=build_translation_messages(scene, batch),
+    )
+    return sanitize_utf8_text(completion.choices[0].message.content or "")
+
+
+def _parse_translation_mapping(content: str) -> dict[int, str]:
+    parsed = json.loads(content)
+    items = parsed.get("items", parsed if isinstance(parsed, list) else None)
+    if not isinstance(items, list):
+        raise ValueError(f"模型返回格式无法解析: {content}")
+
+    mapping: dict[int, str] = {}
+    for item in items:
+        if "id" not in item or "translation" not in item:
+            continue
+        try:
+            item_id = int(item["id"])
+        except (TypeError, ValueError):
+            continue
+
+        translation = sanitize_utf8_text(str(item["translation"])).strip()
+        if translation:
+            mapping[item_id] = translation
+    return mapping
+
+
 def translate_segments(
     segments: list[TranscriptSegment],
     scene: str,
@@ -64,32 +103,30 @@ def translate_segments(
 
     translations: list[str] = []
     for batch in _chunked(segments, config.translation_batch_size):
-        completion = client.chat.completions.create(
-            model=config.llm_model,
-            temperature=config.llm_temperature,
-            response_format={"type": "json_object"},
-            messages=build_translation_messages(scene, batch),
-        )
+        pending_batch = list(batch)
+        mapping: dict[int, str] = {}
+        last_content = ""
 
-        content = completion.choices[0].message.content or ""
-        parsed = json.loads(content)
-        items = parsed.get("items", parsed if isinstance(parsed, list) else None)
-        if not isinstance(items, list):
-            raise ValueError(f"模型返回格式无法解析: {content}")
+        for _ in range(MAX_MISSING_ITEM_RETRIES + 1):
+            last_content = _request_translation_content(client, scene, pending_batch, config)
+            batch_mapping = _parse_translation_mapping(last_content)
 
-        mapping = {
-            int(item["id"]): str(item["translation"]).strip()
-            for item in items
-            if "id" in item and "translation" in item
-        }
+            for segment in pending_batch:
+                translation = batch_mapping.get(segment.index)
+                if translation:
+                    mapping[segment.index] = translation
 
-        for segment in batch:
-            translation = mapping.get(segment.index)
-            if not translation:
-                raise ValueError(
-                    f"模型返回中缺少第 {segment.index} 条翻译，请重试。原始返回: {content}"
-                )
-            translations.append(translation)
+            pending_batch = [segment for segment in batch if segment.index not in mapping]
+            if not pending_batch:
+                break
+
+        if pending_batch:
+            missing_ids = ", ".join(str(segment.index) for segment in pending_batch)
+            raise ValueError(
+                f"模型返回中缺少第 {missing_ids} 条翻译，请重试。原始返回: {last_content}"
+            )
+
+        translations.extend(mapping[segment.index] for segment in batch)
 
     if len(translations) != len(segments):
         raise ValueError("翻译数量与识别片段数量不一致。")

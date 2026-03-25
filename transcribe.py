@@ -4,6 +4,7 @@ from pathlib import Path
 from faster_whisper import WhisperModel
 
 from config import AppConfig
+from text_safety import sanitize_utf8_text
 
 
 @dataclass
@@ -35,7 +36,7 @@ def transcribe_audio(audio_path: str | Path, config: AppConfig) -> list[Transcri
 
     results: list[TranscriptSegment] = []
     for index, segment in enumerate(segments, start=1):
-        text = segment.text.strip()
+        text = sanitize_utf8_text(segment.text).strip()
         if not text:
             continue
         results.append(

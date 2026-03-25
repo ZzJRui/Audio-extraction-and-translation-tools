@@ -5,6 +5,7 @@ from typing import Iterable
 import srt
 
 from transcribe import TranscriptSegment
+from text_safety import sanitize_utf8_text
 
 CJK_LINE_LIMIT = 18
 LATIN_LINE_LIMIT = 42
@@ -125,7 +126,7 @@ def _split_two_lines(text: str, limit: int) -> tuple[str, str]:
 
 
 def _format_text_block(text: str, limit: int) -> str:
-    cleaned = _normalize_whitespace(text)
+    cleaned = sanitize_utf8_text(_normalize_whitespace(text))
     if not cleaned or len(cleaned) <= limit:
         return cleaned
 
@@ -293,4 +294,6 @@ def build_bilingual_subtitles(
 
 
 def write_srt_file(path: str | Path, subtitles: Iterable[srt.Subtitle]) -> None:
-    Path(path).write_text(srt.compose(list(subtitles)), encoding="utf-8")
+    content = srt.compose(list(subtitles))
+    safe_content = sanitize_utf8_text(content)
+    Path(path).write_text(safe_content, encoding="utf-8")

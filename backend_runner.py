@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app_service import execute_subtitle_task
 from config import AppConfig, get_app_root
+from text_safety import sanitize_utf8_text
 
 
 def main() -> int:
@@ -29,7 +30,7 @@ def main() -> int:
         json.dump(response, sys.stdout, ensure_ascii=False)
         return 0
     except Exception as exc:
-        print(f"{exc.__class__.__name__}:{exc}", file=sys.stderr)
+        print(sanitize_utf8_text(f"{exc.__class__.__name__}:{exc}"), file=sys.stderr)
         return 1
 
 
