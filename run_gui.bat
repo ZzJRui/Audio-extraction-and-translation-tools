@@ -6,10 +6,7 @@ title Audio Subtitle GUI
 echo Starting desktop GUI...
 echo.
 
-set "LOCAL_PY312=C:\Users\zzz\AppData\Local\Programs\Python\Python312\python.exe"
-set "BACKEND_PYTHON=C:\Users\zzz\anaconda3\python.exe"
 set "RUNTIME_ROOT=%cd%_runtime"
-set "ANACONDA_SITE_PACKAGES=C:\Users\zzz\anaconda3\Lib\site-packages"
 set "LOCAL_TMP=%RUNTIME_ROOT%\.tmp"
 set "LOCAL_CACHE=%RUNTIME_ROOT%\.cache"
 
@@ -23,12 +20,18 @@ set "HF_HOME=%LOCAL_CACHE%\huggingface"
 set "XDG_CACHE_HOME=%LOCAL_CACHE%"
 set "PIP_CACHE_DIR=%LOCAL_CACHE%\pip"
 set "APP_RUNTIME_ROOT=%RUNTIME_ROOT%"
-set "PYTHONPATH=%ANACONDA_SITE_PACKAGES%;%cd%"
-set "PATH=%ANACONDA_SITE_PACKAGES%\PySide6;%ANACONDA_SITE_PACKAGES%\shiboken6;C:\Users\zzz\anaconda3\Library\bin;%PATH%"
-set "BACKEND_PYTHON=%BACKEND_PYTHON%"
+
+if defined CONDA_PREFIX (
+    set "CONDA_SITE_PACKAGES=%CONDA_PREFIX%\Lib\site-packages"
+    if exist "%CONDA_SITE_PACKAGES%\PySide6" (
+        set "PYTHONPATH=%CONDA_SITE_PACKAGES%;%cd%"
+        set "PATH=%CONDA_SITE_PACKAGES%\PySide6;%CONDA_SITE_PACKAGES%\shiboken6;%CONDA_PREFIX%\Library\bin;%PATH%"
+    )
+    if not defined BACKEND_PYTHON if exist "%CONDA_PREFIX%\python.exe" set "BACKEND_PYTHON=%CONDA_PREFIX%\python.exe"
+)
 
 set "PY_CMD="
-if exist "%LOCAL_PY312%" if exist "%ANACONDA_SITE_PACKAGES%\PySide6" set "PY_CMD=%LOCAL_PY312%"
+if defined GUI_PYTHON if exist "%GUI_PYTHON%" set "PY_CMD=%GUI_PYTHON%"
 
 if not defined PY_CMD (
     where python >nul 2>nul

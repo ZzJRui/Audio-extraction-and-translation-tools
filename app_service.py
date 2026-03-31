@@ -15,7 +15,8 @@ from openai import (
     RateLimitError,
 )
 
-from config import AppConfig, get_runtime_root
+from config import AppConfig
+from stability import prepare_runtime_environment, should_warn_about_model_download
 from subtitle import (
     build_bilingual_subtitles,
     build_original_subtitles,
@@ -128,24 +129,6 @@ def prepare_task_dirs(
     _emit_progress(progress_callback, "清理完成。")
 
 
-def configure_local_ffmpeg(project_root: Path) -> None:
-    search_roots = [
-        get_runtime_root() / "tools" / "ffmpeg",
-        project_root / "tools" / "ffmpeg",
-    ]
-    for ffmpeg_root in search_roots:
-        if not ffmpeg_root.exists():
-            continue
-        for ffmpeg_exe in ffmpeg_root.rglob("ffmpeg.exe"):
-            bin_dir = ffmpeg_exe.parent
-            os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
-            return
-
-
-def configure_runtime_env() -> None:
-    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-
-
 def validate_runtime(config: AppConfig) -> None:
     del config
     if shutil.which("ffmpeg") is None:
@@ -153,8 +136,7 @@ def validate_runtime(config: AppConfig) -> None:
 
 
 def initialize_runtime(project_root: Path, config: AppConfig) -> None:
-    configure_runtime_env()
-    configure_local_ffmpeg(project_root)
+    prepare_runtime_environment(project_root)
     validate_runtime(config)
 
 
@@ -200,15 +182,21 @@ def execute_subtitle_task(
     initialize_runtime(project_root, config)
 
     output_dir = config.output_dir
+    _emit_progress(progress_callback, "1/4 正在准备环境和输出目录...")
     ensure_output_dir(output_dir)
+    clear_directory_files(output_dir)
     normalized_path, normalized_scene = validate_task_request(
         audio_path,
         subtitle_mode,
         scene,
         config,
     )
+    _emit_progress(progress_callback, "环境与目录准备完成。")
 
-    _emit_progress(progress_callback, "1/3 正在进行语音识别...")
+    if should_warn_about_model_download(config):
+        _emit_progress(progress_callback, "首次运行可能需要下载 Whisper 模型，耗时会明显变长。")
+
+    _emit_progress(progress_callback, "2/4 正在进行语音识别...")
     recognized_segments = transcribe_audio(normalized_path, config)
     segments = normalize_segments(recognized_segments)
     _emit_progress(
@@ -218,13 +206,13 @@ def execute_subtitle_task(
 
     translations: list[str] | None = None
     if subtitle_mode in TRANSLATION_MODES:
-        _emit_progress(progress_callback, "2/3 正在进行情景翻译...")
+        _emit_progress(progress_callback, "3/4 正在进行情景翻译...")
         translations = translate_segments(segments, normalized_scene, config)
-        _emit_progress(progress_callback, "翻译完成。")
+        _emit_progress(progress_callback, "情景翻译完成。")
     else:
-        _emit_progress(progress_callback, "2/3 已跳过翻译，当前仅输出原文字幕。")
+        _emit_progress(progress_callback, "3/4 已跳过翻译，当前仅输出原文字幕。")
 
-    _emit_progress(progress_callback, "3/3 正在生成字幕文件...")
+    _emit_progress(progress_callback, "4/4 正在导出字幕文件...")
     if subtitle_mode == "original":
         output_file = output_dir / "original.srt"
         write_srt_file(output_file, build_original_subtitles(segments))

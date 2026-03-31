@@ -1,118 +1,113 @@
 # 音频字幕提取与翻译工具
 
-一个支持命令行和桌面 GUI 的本地字幕工具，用于将录音自动转为字幕，并根据指定情景生成中文翻译字幕与双语字幕。
+这是一个本地字幕工具，用来把音频识别成字幕，并按需要输出原文、译文或双语 `SRT`。
 
-## 功能
+## 推荐运行方式
 
-- 使用 `faster-whisper` 识别音频内容
-- 可按需生成原文、译文或双语其中一种字幕
-- 使用 DeepSeek 或 OpenAI 兼容接口进行情景翻译
-- 只输出当前选择的 `SRT` 文件，减少无用结果
-- 优先使用 `PySide6` 桌面界面；若当前环境的 Qt 运行库异常，会自动回退到内置 Tkinter 界面
+项目当前唯一推荐的主运行时是 **Anaconda Python 3.13**。
 
-## 项目结构
+日常使用优先顺序：
 
-```text
-project/
-├─ input/
-│  └─ audio.mp3
-├─ output/
-│  ├─ original.srt
-│  ├─ translation.srt
-│  ├─ bilingual.srt
-├─ main.py
-├─ transcribe.py
-├─ translate.py
-├─ subtitle.py
-├─ config.py
-├─ app_service.py
-├─ gui.py
-└─ requirements.txt
-```
+1. `run_gui.bat`
+2. `python gui.py`
+3. `python main.py`
 
-## 安装依赖
+`gui.py` 会优先尝试 `PySide6`。如果当前 Qt 运行时不可用，程序会自动回退到 **Tkinter**，这是一条正式保留的稳定性兜底路径，不是临时补丁。
+
+## 启动自检
+
+程序现在带有统一的 **启动自检**。GUI 和 CLI 都会在真正开始任务前检查：
+
+- Python 可执行路径
+- 当前界面后端：`pyside6` / `tkinter` / `cli`
+- `ffmpeg` 是否可用
+- 输出目录是否可创建、可写
+- `.env` 是否存在
+- 翻译模式下 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` 是否完整
+
+自检结果分三类：
+
+- `fatal`：必须先修复，否则任务不会开始
+- `warning`：可以继续，但会在日志里明确提示
+- `info`：用于说明当前运行状态
+
+## 依赖与环境
+
+先安装 Python 依赖：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-另外请确认本机已经安装 `ffmpeg` 并可在命令行直接使用。
+然后确认本机能直接使用 `ffmpeg`。如果 `ffmpeg` 不可用，启动自检会给出 `fatal`。
 
-## 配置 API
-
-复制 `.env.example` 的内容到 `.env`，并手动填写下面这三项：
+项目会读取根目录下的 `.env`。可以先复制 `.env.example` 再填写：
 
 ```bash
 LLM_API_KEY=你的Key
-LLM_BASE_URL=你的模型接口地址
-LLM_MODEL=你的模型名称
-```
-
-程序不再为 `LLM_BASE_URL` 和 `LLM_MODEL` 提供默认值。
-如果你要切换 DeepSeek、OpenAI 兼容网关或其他服务，直接修改 `.env` 即可。
-
-## 运行
-
-推荐方式：
-
-双击 `run_gui.bat`
-
-或者：
-
-```bash
-python gui.py
+LLM_BASE_URL=模型接口地址
+LLM_MODEL=模型名称
 ```
 
 说明：
 
-- 若本机 `PySide6` 环境正常，会启动增强版桌面界面
-- 若 `PySide6` 因 Qt DLL 问题无法加载，会自动回退到内置 Tkinter 图形界面
+- 原文字幕不依赖 LLM 配置
+- 译文字幕和双语字幕必须配置完整的 LLM 参数
+- 程序不会在诊断日志中写出明文 API Key
 
-备用方式：
+## 运行表现
 
-```bash
-python main.py
-```
+任务进度会按下面的主线输出：
 
-GUI 模式下每次开始任务前，只会自动清理 `output/` 目录中的历史字幕文件，不会删除你选择的原始音频。
+1. 环境和输出目录准备
+2. 语音识别
+3. 翻译或跳过翻译
+4. 导出字幕文件
 
-CLI 模式下仍保留旧逻辑：启动后会清理 `input/` 和 `output/`。
+如果本机还没有对应的 Whisper 模型缓存，识别前会先提示：
 
-## 输出文件
+“首次运行可能需要下载 Whisper 模型，耗时会明显变长。”
 
-程序每次只输出一个文件：
+这不是卡死，属于正常现象。
 
-- 选择原文时：`output/original.srt`
-- 选择译文时：`output/translation.srt`
-- 选择双语时：`output/bilingual.srt`
+## 诊断日志
 
-## 错误提示
+每次任务都会把一份轻量诊断日志写到 `output/logs/`。
 
-程序默认使用简洁中文提示，不会直接打印 Python 报错堆栈。
+日志里会记录：
 
-例如：
+- 时间戳
+- Python 路径
+- GUI 后端
+- 音频路径
+- 字幕模式
+- 关键自检结果
+- 成功或失败状态
+- 失败摘要
 
-- 找不到音频文件时，会提示检查路径
-- API Key 无效时，会提示检查 `.env`
-- 网络异常时，会提示稍后重试
+日志不会记录明文 `LLM_API_KEY`。
 
-## GUI 界面说明
+## 常见问题
 
-桌面版采用单窗口布局：
+### 1. 点开始后一直没反应
 
-- 左侧：音频选择、字幕类型、翻译情景、开始生成
-- 右侧：运行日志、输出文件、字幕预览
-- 底部：打开输出目录、重新开始、退出
+先看右侧日志区是否出现“首次运行可能需要下载 Whisper 模型”。如果有，这是模型首次下载，不是卡死。
 
-如果选择原文字幕，翻译情景输入框会自动禁用。
+### 2. GUI 没打开 PySide6
 
-## 打包为 EXE
+程序会优先尝试 `PySide6`；如果 Qt 运行库不完整，会自动回退到 **Tkinter**。这时仍然可以使用，只是界面后端不同。
 
-推荐使用 `PyInstaller` 的 `onedir` 模式：
+### 3. 翻译模式启动不了
 
-```bash
-pip install pyinstaller
-pyinstaller --noconsole --onedir --name AudioSubtitleTool --add-data "tools;tools" --add-data ".env.example;." gui.py
-```
+通常是启动自检发现 `.env` 缺少 `LLM_API_KEY`、`LLM_BASE_URL` 或 `LLM_MODEL`。看日志里的 `fatal` 项即可定位。
 
-打包完成后，直接双击生成的 `AudioSubtitleTool.exe` 即可打开桌面软件。
+### 4. 识别前就报错 ffmpeg
+
+说明当前环境没有可用的 `ffmpeg`。先把它加入 `PATH`，再重新启动程序。
+
+## 稳定使用建议
+
+- 长期使用时，尽量固定在同一套 **Anaconda Python 3.13** 环境里运行。
+- 不建议在同一个环境里混用来源不一致的 `PySide6`，尤其是 pip 和 conda 混装。
+- 当界面显示使用 **Tkinter** 时，说明 PySide6 首选链路没有通过，但程序仍可继续工作。
+- 涉及运行方式、回退逻辑和环境要求的变更，请同步查看 `AGENT.md` 和本 README，确保约定一致。

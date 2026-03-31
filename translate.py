@@ -12,6 +12,12 @@ TRANSLATION_SYSTEM_MESSAGE = (
     "只能返回翻译结果，不要添加解释、备注或代码块。"
 )
 MAX_MISSING_ITEM_RETRIES = 2
+TERM_REPLACEMENTS = (
+    ("站立飘发球", "站飘发球"),
+    ("站立飘球", "站飘发球"),
+    ("站飘球", "站飘发球"),
+    ("跳飘球", "跳飘发球"),
+)
 
 
 def _chunked(items: list[TranscriptSegment], size: int):
@@ -31,7 +37,7 @@ def _build_prompt(scene: str, batch: list[TranscriptSegment]) -> str:
 1. 自然达意优先，中文要顺口、准确、适合字幕阅读。
 2. 不得漏译、误译，不得擅自扩写或改变事实。
 3. 结合上下文理解同批次内容里的指代、语气、情绪和场景术语，再决定措辞。
-4. 保留人物称呼、专有名词、术语和语气强弱；必要时用更自然的中文表达同样意思。
+4. 保留人物称呼、专有名词、URL、站点名、术语和语气强弱；必要时用更自然的中文表达同样意思。
 5. 只输出翻译，不要加括号说明、解释性补充或自由发挥。
 6. 返回 JSON 对象，格式必须是 {{"items": [{{"id": 1, "translation": "..."}}]}}。
 7. 输出条目数量必须和输入完全一致，id 必须一一对应。
@@ -63,6 +69,13 @@ def _request_translation_content(
     return sanitize_utf8_text(completion.choices[0].message.content or "")
 
 
+def _normalize_translation_terminology(text: str) -> str:
+    normalized = sanitize_utf8_text(text).strip()
+    for source, target in TERM_REPLACEMENTS:
+        normalized = normalized.replace(source, target)
+    return normalized
+
+
 def _parse_translation_mapping(content: str) -> dict[int, str]:
     parsed = json.loads(content)
     items = parsed.get("items", parsed if isinstance(parsed, list) else None)
@@ -78,7 +91,7 @@ def _parse_translation_mapping(content: str) -> dict[int, str]:
         except (TypeError, ValueError):
             continue
 
-        translation = sanitize_utf8_text(str(item["translation"])).strip()
+        translation = _normalize_translation_terminology(str(item["translation"]))
         if translation:
             mapping[item_id] = translation
     return mapping
