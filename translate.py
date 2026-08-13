@@ -13,10 +13,12 @@ TRANSLATION_SYSTEM_MESSAGE = (
 )
 MAX_MISSING_ITEM_RETRIES = 2
 TERM_REPLACEMENTS = (
+    ("发球接发球", "接发球"),
     ("站立飘发球", "站飘发球"),
     ("站立飘球", "站飘发球"),
     ("站飘球", "站飘发球"),
     ("跳飘球", "跳飘发球"),
+    ("飘球发球", "飘发球"),
 )
 
 
@@ -30,17 +32,22 @@ def _build_prompt(scene: str, batch: list[TranscriptSegment]) -> str:
     safe_scene = sanitize_utf8_text(scene)
     payload = [{"id": item.index, "text": sanitize_utf8_text(item.text)} for item in batch]
     return f"""
-你是一名专业字幕翻译，需要把输入英文翻译成适合中文字幕阅读的自然中文。
+你是一名专业字幕翻译助手，需要把输入英文翻译成适合中文字幕阅读的自然中文。
 翻译情景：{safe_scene}
 
 要求：
 1. 自然达意优先，中文要顺口、准确、适合字幕阅读。
 2. 不得漏译、误译，不得擅自扩写或改变事实。
-3. 结合上下文理解同批次内容里的指代、语气、情绪和场景术语，再决定措辞。
-4. 保留人物称呼、专有名词、URL、站点名、术语和语气强弱；必要时用更自然的中文表达同样意思。
-5. 只输出翻译，不要加括号说明、解释性补充或自由发挥。
-6. 返回 JSON 对象，格式必须是 {{"items": [{{"id": 1, "translation": "..."}}]}}。
-7. 输出条目数量必须和输入完全一致，id 必须一一对应。
+3. 这是字幕翻译，不要写成书面腔；结合上下文理解同批次内容里的指代、语气、情绪和场景术语，再决定措辞。
+4. 当前内容可能是排球教学、训练或比赛讲解，请优先按体育语境理解术语。
+5. 遇到 passing、platform、setter、lock、float serve、serve receive、midline、outside of the body、free ball、momentum 等词时，优先按排球语境理解，不要按日常词义误译。
+6. 若原文局部明显不像自然英语，可能受口语、省略或识别误差影响；可结合同批次上下文做保守体育语义判断，但不得自由编造、不得脱离原文扩写。
+7. 保留人物称呼、专有名词、URL、站点名、术语和语气强弱；必要时用更自然的中文表达同样意思。
+8. 只输出翻译，不要加括号说明、解释性补充或自由发挥。
+9. 每个 id 都必须单独翻译；可以参考相邻条目帮助消歧，但不得跨条目合并语义。
+10. 不得把一个条目的内容拆给别的条目，也不得把别的条目内容挪入当前条目。
+11. 返回 JSON 对象，格式必须是 {{"items": [{{"id": 1, "translation": "..."}}]}}。
+12. 输出条目数量必须和输入完全一致，id 必须一一对应。
 
 待翻译内容：
 {json.dumps(payload, ensure_ascii=False, indent=2)}
@@ -145,3 +152,4 @@ def translate_segments(
         raise ValueError("翻译数量与识别片段数量不一致。")
 
     return translations
+

@@ -1,47 +1,136 @@
-# 音频字幕提取与翻译工具
+﻿# 音频字幕提取与翻译工具
 
-这是一个本地字幕工具，用来把音频识别成字幕，并按需要输出原文、译文或双语 `SRT`。
+这是一个本地桌面工具，用来把音频转成 `SRT` 字幕，并按需输出原文、译文或双语字幕。
 
-## 推荐运行方式
+当前主界面已经切到 **Electron 三栏工作台**：
+- 左栏负责任务配置
+- 中栏负责状态和日志
+- 右栏负责结果和字幕预览
 
-项目当前唯一推荐的主运行时是 **Anaconda Python 3.13**。
+Python 后端仍然是唯一任务执行引擎，Whisper 识别、翻译和导出链路继续复用现有实现。
 
-日常使用优先顺序：
+## 推荐启动方式
 
-1. `run_gui.bat`
-2. `python gui.py`
-3. `python main.py`
+首选 Electron 版桌面工作台：
 
-`gui.py` 会优先尝试 `PySide6`。如果当前 Qt 运行时不可用，程序会自动回退到 **Tkinter**，这是一条正式保留的稳定性兜底路径，不是临时补丁。
+```bat
+run_electron.bat
+```
 
-## 启动自检
+如果你还没有安装 Electron 依赖，先执行：
 
-程序现在带有统一的 **启动自检**。GUI 和 CLI 都会在真正开始任务前检查：
+```bash
+npm install
+```
 
-- Python 可执行路径
-- 当前界面后端：`pyside6` / `tkinter` / `cli`
-- `ffmpeg` 是否可用
-- 输出目录是否可创建、可写
-- `.env` 是否存在
-- 翻译模式下 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` 是否完整
+兼容保留的旧入口：
 
-自检结果分三类：
+```bat
+run_gui.bat
+```
 
-- `fatal`：必须先修复，否则任务不会开始
-- `warning`：可以继续，但会在日志里明确提示
-- `info`：用于说明当前运行状态
+旧版 Python GUI 仍可作为回退方案，但后续主线界面以 Electron 为准。
 
-## 依赖与环境
+## Electron 架构
 
-先安装 Python 依赖：
+Electron 版采用 `main + preload + renderer` 结构：
+- `electron/src/main/main.js` 负责窗口、文件选择、启动 Python、打开目录和文件
+- `electron/src/main/preload.js` 负责向渲染层暴露受限 IPC API
+- `electron/src/renderer/` 负责三栏 GUI、状态管理、日志和预览
+- `electron/src/main/python-task.js` 负责 Python 任务适配层
+- `electron/src/main/runtime-paths.js` 负责开发态与安装态的路径分层
+
+当前首版支持：
+- 选择音频文件
+- 选择字幕模式：原文 / 译文 / 双语
+- 在译文和双语模式下填写翻译场景
+- 启动任务并实时查看阶段状态
+- 查看运行日志
+- 打开输出文件、打开输出目录、复制输出路径
+- 搜索字幕预览
+
+当前首版暂不支持：
+- 任务取消
+- 多任务队列
+- 历史任务
+
+## Python 后端复用说明
+
+Electron 不重写业务链路，而是继续调用根目录的 Python 后端：
+- `backend_runner.py` 作为 Electron 侧任务入口
+- `app_service.py` 继续负责任务编排
+- `backend_client.py` 中的 `__PROGRESS__:` 仍是进度前缀协议
+
+渲染层提交给 Python 的字段：
+- `audio_path`
+- `subtitle_mode`
+- `scene`
+- `gui_backend = "electron"`
+
+Python 回包至少包含：
+- `output_file`
+- `output_dir`
+- `subtitle_mode`
+- `segment_count`
+- `used_translation`
+- `preview_text`
+
+## 路径分层
+
+开发态和安装态现在共用一套路径契约：
+- `bundle root`：只读程序资源目录
+- `data root`：用户可写目录
+- `runtime root`：缓存、临时文件和模型缓存目录
+
+开发态默认行为：
+- `.env` 仍然放在项目根目录
+- 输出目录默认是项目根下的 `output/`
+- `.runtime/` 或同级运行时目录可继续作为缓存和模型目录
+
+安装态默认行为：
+- Electron 安装目录只放程序本体和后端资源
+- `.env`、`output/`、日志、缓存、模型统一写入 `app.getPath("userData")`
+- `ffmpeg` 与内置 Python 都从安装包的 `resources/runtime/` 下定位
+
+## Windows 安装包
+
+首版 Windows 分发采用 `electron-builder + NSIS`：
+- `dist/*.exe`：正式发布的安装包
+- `dist/win-unpacked/`：本地烟测和排障用目录
+
+打包前需要准备：
+- Windows 构建机
+- Node.js / npm
+- Python 3.13
+- 项目内可读取的 `ffmpeg` 目录，优先放在 `tools/ffmpeg/`
+
+打包命令：
+
+```bash
+npm run build:runtime
+npm run dist:win:dir
+npm run dist:win
+```
+
+说明：
+- `build:runtime` 会组装 `.runtime-build/`，包含后端脚本、内置 Python 和内置 ffmpeg
+- `dist:win:dir` 用来生成 unpacked 目录，适合先做本地验证
+- `dist:win` 生成 NSIS 安装包 `Setup.exe`
+
+## 环境要求
+
+开发态推荐运行环境：
+- Windows
+- Python 3.13
+- Node.js 18+
+
+安装 Python 依赖：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-然后确认本机能直接使用 `ffmpeg`。如果 `ffmpeg` 不可用，启动自检会给出 `fatal`。
-
-项目会读取根目录下的 `.env`。可以先复制 `.env.example` 再填写：
+开发态项目会读取根目录下的 `.env`。翻译模式需要完整配置：
 
 ```bash
 LLM_API_KEY=你的Key
@@ -50,64 +139,41 @@ LLM_MODEL=模型名称
 ```
 
 说明：
-
 - 原文字幕不依赖 LLM 配置
-- 译文字幕和双语字幕必须配置完整的 LLM 参数
-- 程序不会在诊断日志中写出明文 API Key
+- 译文和双语模式必须提供完整的 LLM 配置
+- 安装版会把模板 `.env.example` 初始化到用户数据目录下的 `.env`
 
-## 运行表现
+## 启动自检
 
-任务进度会按下面的主线输出：
+Python 后端在任务开始前仍会执行启动自检，重点检查：
+- Python 可执行环境
+- 当前 GUI 后端
+- `ffmpeg` 是否可用
+- 输出目录是否可写
+- `.env` 是否存在
+- 翻译模式下的 LLM 配置是否完整
 
-1. 环境和输出目录准备
-2. 语音识别
-3. 翻译或跳过翻译
-4. 导出字幕文件
+如果是首次运行且本地还没有对应的 Whisper 模型缓存，日志里会提示首次运行可能较慢。这属于正常现象，不是卡死。
 
-如果本机还没有对应的 Whisper 模型缓存，识别前会先提示：
+## 校验命令
 
-“首次运行可能需要下载 Whisper 模型，耗时会明显变长。”
+Electron 侧目前提供一组 Node 校验命令：
 
-这不是卡死，属于正常现象。
+```bash
+npm run test:electron
+npm run check:electron
+```
 
-## 诊断日志
+Python 侧测试仍在 `tests/` 下维护，按需执行：
 
-每次任务都会把一份轻量诊断日志写到 `output/logs/`。
+```bash
+python -m unittest discover -s tests -v
+```
 
-日志里会记录：
+## 旧版 Python GUI
 
-- 时间戳
-- Python 路径
-- GUI 后端
-- 音频路径
-- 字幕模式
-- 关键自检结果
-- 成功或失败状态
-- 失败摘要
+旧版 GUI 仍然保留：
+- `gui.py` 优先尝试 `PySide6`
+- 如果 Qt 环境不可用，会自动回退到 `Tkinter`
 
-日志不会记录明文 `LLM_API_KEY`。
-
-## 常见问题
-
-### 1. 点开始后一直没反应
-
-先看右侧日志区是否出现“首次运行可能需要下载 Whisper 模型”。如果有，这是模型首次下载，不是卡死。
-
-### 2. GUI 没打开 PySide6
-
-程序会优先尝试 `PySide6`；如果 Qt 运行库不完整，会自动回退到 **Tkinter**。这时仍然可以使用，只是界面后端不同。
-
-### 3. 翻译模式启动不了
-
-通常是启动自检发现 `.env` 缺少 `LLM_API_KEY`、`LLM_BASE_URL` 或 `LLM_MODEL`。看日志里的 `fatal` 项即可定位。
-
-### 4. 识别前就报错 ffmpeg
-
-说明当前环境没有可用的 `ffmpeg`。先把它加入 `PATH`，再重新启动程序。
-
-## 稳定使用建议
-
-- 长期使用时，尽量固定在同一套 **Anaconda Python 3.13** 环境里运行。
-- 不建议在同一个环境里混用来源不一致的 `PySide6`，尤其是 pip 和 conda 混装。
-- 当界面显示使用 **Tkinter** 时，说明 PySide6 首选链路没有通过，但程序仍可继续工作。
-- 涉及运行方式、回退逻辑和环境要求的变更，请同步查看 `AGENT.md` 和本 README，确保约定一致。
+这条回退链继续保留，主要用于兼容环境或紧急排障，不再作为主线界面演进方向。

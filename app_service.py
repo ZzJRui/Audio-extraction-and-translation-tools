@@ -1,4 +1,4 @@
-import os
+﻿import os
 import shutil
 import sys
 import tempfile
@@ -18,6 +18,7 @@ from openai import (
 from config import AppConfig
 from stability import prepare_runtime_environment, should_warn_about_model_download
 from subtitle import (
+    SubtitleSettings,
     build_bilingual_subtitles,
     build_original_subtitles,
     build_translation_subtitles,
@@ -73,6 +74,7 @@ class TaskResult:
     segment_count: int
     used_translation: bool
     preview_text: str
+    raw_segment_count: int | None = None
 
 
 def _emit_progress(progress_callback: ProgressCallback | None, message: str) -> None:
@@ -198,10 +200,17 @@ def execute_subtitle_task(
 
     _emit_progress(progress_callback, "2/4 正在进行语音识别...")
     recognized_segments = transcribe_audio(normalized_path, config)
-    segments = normalize_segments(recognized_segments)
+    subtitle_settings = SubtitleSettings(
+        max_cps=config.subtitle_max_cps,
+        min_duration=config.subtitle_min_duration,
+        max_duration=config.subtitle_max_duration,
+        min_gap=config.subtitle_min_gap,
+        gap_close=config.subtitle_gap_close,
+    )
+    segments = normalize_segments(recognized_segments, subtitle_settings)
     _emit_progress(
         progress_callback,
-        f"识别完成，共 {len(recognized_segments)} 条片段，优化后生成 {len(segments)} 条字幕。",
+        f"识别完成，原始 {len(recognized_segments)} 条，规范化后 {len(segments)} 条片段。",
     )
 
     translations: list[str] | None = None
@@ -233,6 +242,7 @@ def execute_subtitle_task(
         segment_count=len(segments),
         used_translation=subtitle_mode in TRANSLATION_MODES,
         preview_text=output_file.read_text(encoding="utf-8"),
+        raw_segment_count=len(recognized_segments),
     )
 
 

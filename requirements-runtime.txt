@@ -2,4 +2,3 @@ faster-whisper
 openai
 socksio
 srt
-PySide6

@@ -1,23 +1,31 @@
-import math
+﻿import math
+import string
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Iterable
 
 import srt
 
+from config import (
+    DEFAULT_SUBTITLE_GAP_CLOSE,
+    DEFAULT_SUBTITLE_MAX_CPS,
+    DEFAULT_SUBTITLE_MAX_DURATION,
+    DEFAULT_SUBTITLE_MIN_DURATION,
+    DEFAULT_SUBTITLE_MIN_GAP,
+)
 from transcribe import TranscriptSegment
 from text_safety import sanitize_utf8_text
 
 CJK_LINE_LIMIT = 18
 LATIN_LINE_LIMIT = 42
 MAX_CJK_SEGMENT_LENGTH = 16
-MAX_LATIN_SEGMENT_LENGTH = 36
-MAX_SEGMENT_SPLITS = 3
-MAX_BILINGUAL_SPLITS = 4
-MAX_BILINGUAL_LINES = 3
+MAX_LATIN_CUE_CHARS = 84
+MAX_SEGMENT_SPLITS = 4
 SEGMENT_SEARCH_RADIUS = 12
 MIN_SEGMENT_DURATION = 2.4
-STRONG_BREAK_CHARS = "\u3002\uff01\uff1f?!"
+MIN_FRAME_GAP = 2 / 24.0  # Netflix: minimum 2 frames between subtitles at 24 fps
+STRONG_BREAK_CHARS = "\u3002\uff01\uff1f?!."
 WEAK_BREAK_CHARS = "\uff0c\uff1b\u3001,:;"
 TERMINAL_PUNCTUATION = STRONG_BREAK_CHARS
 MIN_CJK_CHUNK_LENGTH = 6
@@ -25,12 +33,92 @@ MIN_LATIN_CHUNK_WORDS = 2
 MIN_LATIN_CHUNK_LENGTH = 8
 
 
+@dataclass(frozen=True)
+class SubtitleSettings:
+    max_cps: float = DEFAULT_SUBTITLE_MAX_CPS
+    min_duration: float = DEFAULT_SUBTITLE_MIN_DURATION
+    max_duration: float = DEFAULT_SUBTITLE_MAX_DURATION
+    min_gap: float = DEFAULT_SUBTITLE_MIN_GAP
+    gap_close: bool = DEFAULT_SUBTITLE_GAP_CLOSE
+
+
+DEFAULT_SUBTITLE_SETTINGS = SubtitleSettings()
+
+
+ENGLISH_BAD_END_TOKENS = {
+    "a",
+    "an",
+    "and",
+    "at",
+    "because",
+    "but",
+    "by",
+    "for",
+    "from",
+    "if",
+    "in",
+    "into",
+    "of",
+    "on",
+    "or",
+    "so",
+    "the",
+    "through",
+    "to",
+    "with",
+}
+ENGLISH_BAD_END_PHRASES = {
+    ("and", "how"),
+    ("how", "to"),
+    ("on", "my"),
+    ("on", "our"),
+    ("on", "the"),
+    ("on", "your"),
+    ("time", "to"),
+    ("trying", "to"),
+    ("want", "to"),
+    ("with", "a"),
+    ("with", "the"),
+}
+ENGLISH_BAD_END_TRIGRAMS = {
+    ("going", "to", "introduce"),
+    ("need", "to", "be"),
+    ("want", "to", "be"),
+}
+ENGLISH_GOOD_START_TOKENS = {
+    "after",
+    "and",
+    "because",
+    "before",
+    "but",
+    "if",
+    "so",
+    "that",
+    "then",
+    "when",
+    "while",
+}
+ENGLISH_GOOD_START_PHRASES = {
+    ("and", "how"),
+    ("so", "you"),
+    ("that", "you"),
+}
+
+
+def _round_seconds(seconds: float) -> float:
+    return round(max(seconds, 0.0) + 1e-9, 3)
+
+
 def _timedelta(seconds: float):
-    return timedelta(seconds=max(seconds, 0.0))
+    return timedelta(seconds=_round_seconds(seconds))
 
 
 def _contains_cjk(text: str) -> bool:
     return any("\u4e00" <= char <= "\u9fff" for char in text)
+
+
+def _contains_latin(text: str) -> bool:
+    return any(("A" <= char <= "Z") or ("a" <= char <= "z") for char in text)
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -41,8 +129,48 @@ def _display_limit(text: str) -> int:
     return CJK_LINE_LIMIT if _contains_cjk(text) else LATIN_LINE_LIMIT
 
 
-def _segment_length_limit(text: str) -> int:
-    return MAX_CJK_SEGMENT_LENGTH if _contains_cjk(text) else MAX_LATIN_SEGMENT_LENGTH
+def _cue_length_limit(text: str) -> int:
+    return MAX_CJK_SEGMENT_LENGTH if _contains_cjk(text) else MAX_LATIN_CUE_CHARS
+
+
+def _should_split_segment(segment: TranscriptSegment, settings: SubtitleSettings) -> bool:
+    duration = segment.end - segment.start
+    text_len = len(segment.text)
+    if text_len == 0:
+        return False
+
+    if _contains_cjk(segment.text):
+        if text_len > MAX_CJK_SEGMENT_LENGTH and duration >= MIN_SEGMENT_DURATION:
+            return True
+        return settings.max_duration > 0 and duration > settings.max_duration
+
+    if text_len > MAX_LATIN_CUE_CHARS:
+        return True
+    if settings.max_duration > 0 and duration > settings.max_duration:
+        return True
+    if duration > 0 and settings.max_cps > 0 and text_len / duration > settings.max_cps:
+        return True
+    return False
+
+
+def _target_piece_count(segment: TranscriptSegment, settings: SubtitleSettings) -> int:
+    duration = max(segment.end - segment.start, 0.0)
+    text_len = len(segment.text)
+    is_cjk = _contains_cjk(segment.text)
+    max_length = MAX_CJK_SEGMENT_LENGTH if is_cjk else MAX_LATIN_CUE_CHARS
+
+    count = max(1, math.ceil(text_len / max_length))
+    if settings.max_duration > 0 and duration > settings.max_duration:
+        count = max(count, math.ceil(duration / settings.max_duration))
+    if not is_cjk and duration > 0 and settings.max_cps > 0:
+        avg_cps = text_len / duration
+        if avg_cps > settings.max_cps:
+            count = max(count, math.ceil(text_len / (settings.max_cps * duration)))
+    # 上限与时长联动：6 秒规则需要的块数不能被固定上限截断
+    cap = MAX_SEGMENT_SPLITS
+    if settings.max_duration > 0:
+        cap = max(MAX_SEGMENT_SPLITS, math.ceil(duration / settings.max_duration))
+    return min(count, cap)
 
 
 def _join_pieces(left: str, right: str) -> str:
@@ -65,8 +193,44 @@ def _split_at_index(text: str, break_index: int) -> tuple[str, str]:
     return left, right
 
 
-def _score_break_index(index: int, target: int) -> tuple[int, int]:
-    return (abs(index - target), 0 if index <= target else 1)
+def _normalize_latin_token(token: str) -> str:
+    return token.strip(string.whitespace + string.punctuation + '"\'`“”‘’').lower()
+
+
+def _latin_tokens(text: str) -> list[str]:
+    return [token for token in (_normalize_latin_token(piece) for piece in text.split()) if token]
+
+
+def _score_break_index(text: str, index: int, target: int) -> tuple[int, int, int]:
+    penalty = 0
+    if not _contains_cjk(text):
+        left, right = _split_at_index(text, index)
+        left_tokens = _latin_tokens(left)
+        right_tokens = _latin_tokens(right)
+
+        if len(left_tokens) < MIN_LATIN_CHUNK_WORDS or len(right_tokens) < MIN_LATIN_CHUNK_WORDS:
+            penalty += 20
+
+        if left_tokens:
+            if left_tokens[-1] in ENGLISH_BAD_END_TOKENS:
+                penalty += 18
+            if tuple(left_tokens[-2:]) in ENGLISH_BAD_END_PHRASES:
+                penalty += 32
+            if tuple(left_tokens[-3:]) in ENGLISH_BAD_END_TRIGRAMS:
+                penalty += 40
+
+        if right_tokens:
+            if right_tokens[0] in ENGLISH_GOOD_START_TOKENS:
+                penalty -= 6
+            if tuple(right_tokens[:2]) in ENGLISH_GOOD_START_PHRASES:
+                penalty -= 10
+
+        if text[index] in STRONG_BREAK_CHARS:
+            penalty -= 12
+        elif text[index] in WEAK_BREAK_CHARS:
+            penalty -= 6
+
+    return (penalty, abs(index - target), 0 if index <= target else 1)
 
 
 def _find_best_break_index(
@@ -81,7 +245,7 @@ def _find_best_break_index(
 
     search_start = max(1, target - search_radius)
     search_end = min(len(text) - 2, target + search_radius)
-    candidates: list[tuple[tuple[int, int], int]] = []
+    candidates: list[tuple[tuple[int, int, int], int]] = []
 
     for index in range(search_start, search_end + 1):
         if text[index] not in break_chars:
@@ -89,7 +253,7 @@ def _find_best_break_index(
         left, right = _split_at_index(text, index)
         if not left or not right:
             continue
-        candidates.append((_score_break_index(index, target), index))
+        candidates.append((_score_break_index(text, index, target), index))
 
     if not candidates:
         return None
@@ -168,6 +332,132 @@ def _merge_short_pieces(pieces: list[str]) -> list[str]:
             changed = True
             break
     return merged
+
+
+def _is_short_segment(segment: TranscriptSegment, min_duration: float) -> bool:
+    text = _normalize_whitespace(segment.text)
+    if not text:
+        return True
+    duration = segment.end - segment.start
+    if duration < min_duration:
+        return True
+    # 1-2 词的短句只有时长也明显偏短时才视为碎片（避免误并读得完的短句）
+    if _contains_cjk(text):
+        return len(text) <= 2 and duration < 2 * min_duration
+    return len(text.split()) <= 2 and duration < 2 * min_duration
+
+
+def _merge_short_segments(
+    segments: list[TranscriptSegment],
+    min_duration: float,
+) -> list[TranscriptSegment]:
+    """Merge raw segments that are too short into a neighbor (borrowing time).
+
+    A segment is considered too short when its duration is below min_duration or
+    its text has at most two words. Short segments are buffered and attached to
+    the previously emitted segment when the next regular segment arrives; any
+    trailing buffer is appended to the last emitted segment. Timestamps use the
+    union of the merged ranges.
+    """
+    merged: list[TranscriptSegment] = []
+    pending_parts: list[str] = []
+    pending_start: float | None = None
+    pending_end: float | None = None
+
+    def attach(segment: TranscriptSegment, parts: list[str], start: float | None, end: float | None) -> TranscriptSegment:
+        combined = segment.text
+        for part in parts:
+            combined = _join_pieces(combined, part)
+        new_start = min(start, segment.start) if start is not None else segment.start
+        new_end = max(end, segment.end) if end is not None else segment.end
+        return TranscriptSegment(
+            index=segment.index,
+            start=_round_seconds(new_start),
+            end=_round_seconds(new_end),
+            text=combined,
+        )
+
+    for segment in segments:
+        text = _normalize_whitespace(segment.text)
+        if not text:
+            continue
+        cleaned = TranscriptSegment(
+            index=segment.index,
+            start=_round_seconds(segment.start),
+            end=_round_seconds(segment.end),
+            text=text,
+            words=segment.words,
+        )
+        if _is_short_segment(cleaned, min_duration):
+            pending_parts.append(cleaned.text)
+            pending_start = cleaned.start if pending_start is None else min(pending_start, cleaned.start)
+            pending_end = cleaned.end if pending_end is None else max(pending_end, cleaned.end)
+            continue
+
+        if pending_parts and merged:
+            last = merged[-1]
+            merged[-1] = attach(last, pending_parts, pending_start, pending_end)
+            pending_parts = []
+            pending_start = None
+            pending_end = None
+        elif pending_parts:
+            cleaned = attach(cleaned, pending_parts, pending_start, pending_end)
+            pending_parts = []
+            pending_start = None
+            pending_end = None
+
+        merged.append(cleaned)
+
+    if pending_parts:
+        if merged:
+            last = merged[-1]
+            merged[-1] = attach(last, pending_parts, pending_start, pending_end)
+        else:
+            combined = ""
+            for part in pending_parts:
+                combined = _join_pieces(combined, part)
+            merged.append(
+                TranscriptSegment(
+                    index=1,
+                    start=_round_seconds(pending_start or 0.0),
+                    end=_round_seconds(pending_end or (pending_start or 0.0)),
+                    text=combined,
+                )
+            )
+
+    return merged
+
+
+def _close_gaps(
+    segments: list[TranscriptSegment],
+    min_gap: float,
+) -> list[TranscriptSegment]:
+    """Close small gaps between consecutive subtitles (Netflix chaining).
+
+    Gaps smaller than min_gap are closed by extending the previous subtitle's
+    out-time to two frames before the next subtitle's in-time. Gaps of at least
+    min_gap are preserved. First/last boundaries are left untouched.
+    """
+    if min_gap <= 0:
+        return list(segments)
+
+    result = list(segments)
+    for index in range(len(result) - 1):
+        previous = result[index]
+        current = result[index + 1]
+        gap = current.start - previous.end
+        if not (0 < gap < min_gap):
+            continue
+        new_end = _round_seconds(current.start - MIN_FRAME_GAP)
+        if new_end <= previous.start:
+            continue
+        result[index] = TranscriptSegment(
+            index=previous.index,
+            start=previous.start,
+            end=new_end,
+            text=previous.text,
+        )
+    return result
 
 
 def _split_text_to_chunks(
@@ -253,40 +543,13 @@ def _format_text_block(text: str, limit: int) -> str:
     return f"{first}\n{second}"
 
 
-def _join_piece_group(pieces: list[str]) -> str:
-    if not pieces:
-        return ""
-
-    joined = pieces[0]
-    for piece in pieces[1:]:
-        joined = _join_pieces(joined, piece)
-    return joined
-
-
 def _split_text_to_lines(text: str, limit: int) -> list[str]:
     cleaned = sanitize_utf8_text(_normalize_whitespace(text))
     if not cleaned:
         return []
 
-    estimated_lines = max(1, math.ceil(len(cleaned) / max(limit, 1)) + 2)
+    estimated_lines = max(1, math.ceil(len(cleaned) / max(limit, 1)))
     return _split_text_to_chunks(cleaned, limit, max_pieces=estimated_lines)
-
-
-def _take_prefix_lines(text: str, limit: int, max_lines: int) -> tuple[list[str], list[str]]:
-    if max_lines <= 0:
-        return [], _split_text_to_lines(text, limit)
-
-    lines = _split_text_to_lines(text, limit)
-    if len(lines) <= max_lines:
-        return lines, []
-
-    prefix = lines[:max_lines]
-    rest = lines[max_lines:]
-
-    while rest and _is_too_short_piece(_join_piece_group(rest)) and len(prefix) > 1:
-        rest = [prefix.pop()] + rest
-
-    return prefix, rest
 
 
 def _compose_bilingual_content(translation_text: str, original_text: str) -> str:
@@ -294,13 +557,219 @@ def _compose_bilingual_content(translation_text: str, original_text: str) -> str
     return "\n".join(blocks)
 
 
+def _compose_single_mode_content(text: str) -> str:
+    return "\n".join(_split_text_to_lines(text, _display_limit(text)))
+
+
+def _find_nearest_break_index(text: str, char_pos: int) -> int | None:
+    if len(text) < 2:
+        return None
+    radius = max(4, min(SEGMENT_SEARCH_RADIUS * 2, len(text) // 2))
+    search_start = max(1, char_pos - radius)
+    search_end = min(len(text) - 1, char_pos + radius)
+    best: int | None = None
+    for index in range(search_start, search_end + 1):
+        if text[index] not in STRONG_BREAK_CHARS + WEAK_BREAK_CHARS + " ":
+            continue
+        if best is None or abs(index - char_pos) < abs(best - char_pos):
+            best = index
+    return best
+
+
+def _timed_pieces_from_words(
+    segment: TranscriptSegment,
+    pieces: list[str],
+    words: list,
+) -> list[TranscriptSegment] | None:
+    text = segment.text
+    word_chars = [max(len(word.text), 1) for word in words]
+    total_word_chars = sum(word_chars)
+    if total_word_chars <= 0 or not text:
+        return None
+
+    bounds: list[tuple[int, int]] = []
+    pos = 0
+    for piece in pieces:
+        bounds.append((pos, pos + len(piece)))
+        pos += len(piece)
+
+    word_positions: list[int] = []
+    acc = 0
+    for word in words:
+        word_positions.append(acc)
+        acc += len(word.text) + 1
+
+    def word_index_at(text_char_pos: int) -> int:
+        for index, word_pos in enumerate(word_positions):
+            if text_char_pos <= word_pos + len(words[index].text):
+                return index
+        return len(words) - 1
+
+    results: list[TranscriptSegment] = []
+    for index, (lo, hi) in enumerate(bounds):
+        first = word_index_at(lo)
+        last = max(first, min(word_index_at(hi), len(words) - 1))
+        block_start = max(words[first].start, segment.start)
+        block_end = min(words[last].end, segment.end)
+        results.append(
+            TranscriptSegment(
+                index=segment.index + index,
+                start=_round_seconds(block_start),
+                end=_round_seconds(block_end),
+                text=pieces[index],
+            )
+        )
+
+    for index in range(1, len(results)):
+        if results[index].start < results[index - 1].end:
+            results[index].start = _round_seconds(results[index - 1].end)
+    for result in results:
+        if result.start >= result.end:
+            return None
+    return results
+
+
+def _split_with_word_timestamps(
+    segment: TranscriptSegment,
+    target_count: int,
+    max_length: int,
+) -> list[TranscriptSegment] | None:
+    words = list(segment.words)
+    text = segment.text
+    if target_count < 2 or len(words) < target_count or not text:
+        return None
+
+    pauses = [words[index + 1].start - words[index].end for index in range(len(words) - 1)]
+    gap_count = target_count - 1
+    cut_gaps = sorted(range(len(pauses)), key=lambda index: pauses[index], reverse=True)[:gap_count]
+    cut_gaps = sorted(cut_gaps)
+
+    word_chars = [max(len(word.text), 1) for word in words]
+    total_word_chars = sum(word_chars)
+    if total_word_chars <= 0:
+        return None
+
+    word_positions: list[int] = []
+    acc = 0
+    for word in words:
+        word_positions.append(acc)
+        acc += len(word.text) + 1
+    total_with_spaces = max(acc - 1, 1)
+
+    break_indexes: list[int] = []
+    for gap in cut_gaps:
+        char_pos = int(round(word_positions[gap + 1] / total_with_spaces * len(text)))
+        break_index = _find_nearest_break_index(text, char_pos)
+        if break_index is None:
+            return None
+        break_indexes.append(break_index)
+    break_indexes = sorted(set(break_indexes))
+    # 不同停顿映射到同一个断点（去重后刀数不足）时放弃词时间戳路径，
+    # 交由带短块合并的加权 fallback 处理，避免少切一刀留下超长块。
+    if len(break_indexes) != len(cut_gaps):
+        return None
+
+    pieces: list[str] = []
+    previous = 0
+    for break_index in break_indexes:
+        piece = text[previous:break_index].strip()
+        if not piece:
+            return None
+        pieces.append(piece)
+        previous = break_index
+    tail = text[previous:].strip()
+    if not tail:
+        return None
+    pieces.append(tail)
+
+    if " ".join(pieces) != " ".join(text.split()):
+        return None
+    if any(len(piece) > max_length for piece in pieces):
+        return None
+    # 词时间戳断点可能落在过短停顿处（如识别噪声单字），切出碎片块时放弃，
+    # 由加权 fallback（带 _merge_short_pieces）合并。
+    if any(_is_too_short_piece(piece) for piece in pieces):
+        return None
+    return _timed_pieces_from_words(segment, pieces, words)
+
+
+def _distribute_times_evenly(segment: TranscriptSegment, pieces: list[str]) -> list[TranscriptSegment]:
+    """Split a segment's time equally across pieces (last piece absorbs rounding).
+
+    Used when enforcing the max-duration rule: equal time slices guarantee every
+    piece stays within max_duration when the piece count is ceil(dur/max_duration),
+    whereas length-weighted distribution can leave a long-text piece over the cap.
+    """
+    if len(pieces) == 1:
+        return [
+            TranscriptSegment(
+                index=segment.index,
+                start=_round_seconds(segment.start),
+                end=_round_seconds(segment.end),
+                text=pieces[0],
+            )
+        ]
+
+    duration = max(segment.end - segment.start, 0.0)
+    step = duration / len(pieces)
+    results: list[TranscriptSegment] = []
+    current_start = segment.start
+    for piece_index, piece in enumerate(pieces):
+        current_end = segment.end if piece_index == len(pieces) - 1 else current_start + step
+        results.append(
+            TranscriptSegment(
+                index=segment.index + piece_index,
+                start=_round_seconds(current_start),
+                end=_round_seconds(current_end),
+                text=piece,
+            )
+        )
+        current_start = current_end
+    return results
+
+
+def _enforce_max_duration(
+    segments: list[TranscriptSegment],
+    settings: SubtitleSettings,
+) -> list[TranscriptSegment]:
+    """Re-split any piece that still exceeds max_duration (6-second rule).
+
+    Runs after merging so that borrowing does not leave an over-long neighbor.
+    Over-long pieces are re-cut with an equal time distribution, which keeps every
+    resulting piece within max_duration regardless of text-length imbalance.
+    """
+    if settings.max_duration <= 0:
+        return list(segments)
+
+    result: list[TranscriptSegment] = []
+    for segment in segments:
+        duration = segment.end - segment.start
+        if duration <= settings.max_duration + 0.1:
+            result.append(segment)
+            continue
+
+        max_length = _cue_length_limit(segment.text)
+        count = max(2, math.ceil(duration / settings.max_duration))
+        pieces = _split_text_to_chunks(
+            segment.text,
+            max_length,
+            max_pieces=count,
+            desired_count=count,
+        )
+        if len(pieces) < 2:
+            result.append(segment)
+            continue
+        result.extend(_enforce_max_duration(_distribute_times_evenly(segment, pieces), settings))
+    return result
+
+
 def _distribute_segment_times(segment: TranscriptSegment, pieces: list[str]) -> list[TranscriptSegment]:
     if len(pieces) == 1:
         return [
             TranscriptSegment(
                 index=segment.index,
-                start=segment.start,
-                end=segment.end,
+                start=_round_seconds(segment.start),
+                end=_round_seconds(segment.end),
                 text=pieces[0],
             )
         ]
@@ -313,9 +782,9 @@ def _distribute_segment_times(segment: TranscriptSegment, pieces: list[str]) -> 
     current_start = segment.start
     for piece_index, piece in enumerate(pieces):
         if piece_index == len(pieces) - 1:
-            current_end = segment.end
+            current_end = _round_seconds(segment.end)
         else:
-            current_end = current_start + (duration * weights[piece_index] / total_weight)
+            current_end = _round_seconds(current_start + (duration * weights[piece_index] / total_weight))
         results.append(
             TranscriptSegment(
                 index=segment.index + piece_index,
@@ -329,120 +798,64 @@ def _distribute_segment_times(segment: TranscriptSegment, pieces: list[str]) -> 
     return results
 
 
-def _split_bilingual_pair(segment: TranscriptSegment, translation: str) -> list[tuple[float, float, str, str]]:
-    original_text = sanitize_utf8_text(_normalize_whitespace(segment.text))
-    translation_text = sanitize_utf8_text(_normalize_whitespace(translation))
-    original_limit = _display_limit(original_text)
-    translation_limit = _display_limit(translation_text)
-
-    bilingual_pieces: list[tuple[str, str]] = []
-    remaining_original = original_text
-    remaining_translation = translation_text
-
-    while remaining_original or remaining_translation:
-        original_lines = _split_text_to_lines(remaining_original, original_limit)
-        translation_lines = _split_text_to_lines(remaining_translation, translation_limit)
-
-        if len(original_lines) + len(translation_lines) <= MAX_BILINGUAL_LINES:
-            bilingual_pieces.append(("\n".join(translation_lines), "\n".join(original_lines)))
-            break
-
-        if not remaining_original:
-            translation_budget = MAX_BILINGUAL_LINES
-            original_budget = 0
-        elif not remaining_translation:
-            translation_budget = 0
-            original_budget = MAX_BILINGUAL_LINES
-        elif len(translation_lines) <= 1:
-            translation_budget = 1
-            original_budget = MAX_BILINGUAL_LINES - 1
-        elif len(original_lines) <= 1:
-            translation_budget = MAX_BILINGUAL_LINES - 1
-            original_budget = 1
-        elif len(translation_lines) > len(original_lines):
-            translation_budget = 2
-            original_budget = 1
-        elif len(original_lines) > len(translation_lines):
-            translation_budget = 1
-            original_budget = 2
-        elif len(remaining_translation) >= len(remaining_original):
-            translation_budget = 2
-            original_budget = 1
-        else:
-            translation_budget = 1
-            original_budget = 2
-
-        translation_prefix, translation_rest = _take_prefix_lines(
-            remaining_translation,
-            translation_limit,
-            translation_budget,
-        )
-        original_prefix, original_rest = _take_prefix_lines(
-            remaining_original,
-            original_limit,
-            original_budget,
-        )
-
-        translation_block = "\n".join(translation_prefix)
-        original_block = "\n".join(original_prefix)
-        if not translation_block and not original_block:
-            break
-
-        bilingual_pieces.append((translation_block, original_block))
-        remaining_translation = _join_piece_group(translation_rest)
-        remaining_original = _join_piece_group(original_rest)
-
-    weights = [max(len(translation_piece) + len(original_piece), 1) for translation_piece, original_piece in bilingual_pieces]
-    total_weight = sum(weights)
-    duration = max(segment.end - segment.start, 0.0)
-
-    results: list[tuple[float, float, str, str]] = []
-    current_start = segment.start
-    for index, (translation_piece, original_piece) in enumerate(bilingual_pieces):
-        if index == len(bilingual_pieces) - 1:
-            current_end = segment.end
-        else:
-            current_end = current_start + (duration * weights[index] / total_weight)
-        results.append((current_start, current_end, translation_piece, original_piece))
-        current_start = current_end
-
-    return results
-
-
-def normalize_segments(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
+def normalize_segments(
+    segments: list[TranscriptSegment],
+    settings: SubtitleSettings = DEFAULT_SUBTITLE_SETTINGS,
+) -> list[TranscriptSegment]:
+    merged_segments = _merge_short_segments(segments, settings.min_duration)
     normalized_segments: list[TranscriptSegment] = []
 
-    for segment in segments:
+    for segment in merged_segments:
         cleaned_text = _normalize_whitespace(segment.text)
         if not cleaned_text:
             continue
 
         cleaned_segment = TranscriptSegment(
             index=segment.index,
-            start=segment.start,
-            end=segment.end,
+            start=_round_seconds(segment.start),
+            end=_round_seconds(segment.end),
             text=cleaned_text,
+            words=segment.words,
         )
-        max_length = _segment_length_limit(cleaned_text)
-        should_split = len(cleaned_text) > max_length and (cleaned_segment.end - cleaned_segment.start) >= MIN_SEGMENT_DURATION
 
-        split_segments = (
-            _distribute_segment_times(
-                cleaned_segment,
-                _split_text_to_chunks(cleaned_text, max_length, max_pieces=MAX_SEGMENT_SPLITS),
-            )
-            if should_split
-            else [cleaned_segment]
-        )
+        if _should_split_segment(cleaned_segment, settings):
+            max_length = _cue_length_limit(cleaned_text)
+            target_count = _target_piece_count(cleaned_segment, settings)
+            timed_segments = _split_with_word_timestamps(cleaned_segment, target_count, max_length)
+            if timed_segments is not None and settings.max_duration > 0:
+                if any(seg.end - seg.start > settings.max_duration + 0.1 for seg in timed_segments):
+                    timed_segments = None
+            if timed_segments is not None:
+                split_segments = timed_segments
+            else:
+                split_segments = _distribute_segment_times(
+                    cleaned_segment,
+                    _split_text_to_chunks(
+                        cleaned_text,
+                        max_length,
+                        max_pieces=max(target_count, MAX_SEGMENT_SPLITS),
+                        desired_count=target_count,
+                    ),
+                )
+        else:
+            split_segments = [cleaned_segment]
         normalized_segments.extend(split_segments)
+
+    # 拆分可能产出短块（如 raw 长段切出的残片），再做一遍最短时长合并
+    normalized_segments = _merge_short_segments(normalized_segments, settings.min_duration)
+    # 合并借时后可能留下超长块，按 6 秒规则兜底重切（时长均分）
+    normalized_segments = _enforce_max_duration(normalized_segments, settings)
+
+    if settings.gap_close:
+        normalized_segments = _close_gaps(normalized_segments, settings.min_gap)
 
     reindexed_segments: list[TranscriptSegment] = []
     for index, segment in enumerate(normalized_segments, start=1):
         reindexed_segments.append(
             TranscriptSegment(
                 index=index,
-                start=segment.start,
-                end=segment.end,
+                start=_round_seconds(segment.start),
+                end=_round_seconds(segment.end),
                 text=segment.text,
             )
         )
@@ -455,7 +868,14 @@ def format_original_text(text: str) -> str:
 
 
 def format_translation_text(text: str) -> str:
+    cleaned = sanitize_utf8_text(_normalize_whitespace(text))
+    if _contains_cjk(cleaned) and _contains_latin(cleaned):
+        return cleaned
     return _format_text_block(text, limit=_display_limit(text))
+
+
+def _format_bilingual_original_text(text: str) -> str:
+    return sanitize_utf8_text(_normalize_whitespace(text))
 
 
 def build_original_subtitles(segments: list[TranscriptSegment]) -> list[srt.Subtitle]:
@@ -474,15 +894,19 @@ def build_translation_subtitles(
     segments: list[TranscriptSegment],
     translations: list[str],
 ) -> list[srt.Subtitle]:
-    return [
-        srt.Subtitle(
-            index=segment.index,
-            start=_timedelta(segment.start),
-            end=_timedelta(segment.end),
-            content=format_translation_text(translation),
+    subtitles: list[srt.Subtitle] = []
+
+    for subtitle_index, (segment, translation) in enumerate(zip(segments, translations, strict=True), start=1):
+        subtitles.append(
+            srt.Subtitle(
+                index=subtitle_index,
+                start=_timedelta(segment.start),
+                end=_timedelta(segment.end),
+                content=format_translation_text(translation),
+            )
         )
-        for segment, translation in zip(segments, translations, strict=True)
-    ]
+
+    return subtitles
 
 
 def build_bilingual_subtitles(
@@ -490,19 +914,19 @@ def build_bilingual_subtitles(
     translations: list[str],
 ) -> list[srt.Subtitle]:
     subtitles: list[srt.Subtitle] = []
-    subtitle_index = 1
 
-    for segment, translation in zip(segments, translations, strict=True):
-        for start, end, translation_piece, original_piece in _split_bilingual_pair(segment, translation):
-            subtitles.append(
-                srt.Subtitle(
-                    index=subtitle_index,
-                    start=_timedelta(start),
-                    end=_timedelta(end),
-                    content=_compose_bilingual_content(translation_piece, original_piece),
-                )
+    for subtitle_index, (segment, translation) in enumerate(zip(segments, translations, strict=True), start=1):
+        subtitles.append(
+            srt.Subtitle(
+                index=subtitle_index,
+                start=_timedelta(segment.start),
+                end=_timedelta(segment.end),
+                content=_compose_bilingual_content(
+                    format_translation_text(translation),
+                    _format_bilingual_original_text(segment.text),
+                ),
             )
-            subtitle_index += 1
+        )
 
     return subtitles
 
@@ -511,3 +935,4 @@ def write_srt_file(path: str | Path, subtitles: Iterable[srt.Subtitle]) -> None:
     content = srt.compose(list(subtitles))
     safe_content = sanitize_utf8_text(content)
     Path(path).write_text(safe_content, encoding="utf-8")
+
