@@ -1,8 +1,9 @@
-.env
+﻿.env
 __pycache__/
 .cache/
 .tmp/
 .runtime/
+.runtime-build/
 .pip-cache/
 .py312libs/
 .py312runtime/
@@ -12,3 +13,10 @@ __pycache__/
 tools/
 output/
 input/
+node_modules/
+dist/
+.tmp_test/
+.cache-downloads/
+.downloads/
+.reasonix/
+electron-start.*.log

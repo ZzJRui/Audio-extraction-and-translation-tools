@@ -1,4 +1,5 @@
-import json
+﻿import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -8,6 +9,24 @@ from backend_client import PROGRESS_PREFIX
 from config import AppConfig, get_app_root
 from stability import collect_startup_report, prepare_runtime_environment, write_task_diagnostic_log
 from text_safety import sanitize_utf8_text
+
+
+def _configure_stdio() -> None:
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+    for stream_name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def _emit_error(message: str) -> None:
+    print(sanitize_utf8_text(message), file=sys.stderr, flush=True)
+
+
+_configure_stdio()
 
 
 def main() -> int:
@@ -59,6 +78,7 @@ def main() -> int:
             config=config,
         )
         json.dump(response, sys.stdout, ensure_ascii=False)
+        sys.stdout.flush()
         return 0
     except Exception as exc:
         try:
@@ -75,7 +95,7 @@ def main() -> int:
             )
         except Exception:
             pass
-        print(sanitize_utf8_text(f"{exc.__class__.__name__}:{exc}"), file=sys.stderr)
+        _emit_error(f"{exc.__class__.__name__}: {exc}")
         return 1
 
 

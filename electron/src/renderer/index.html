@@ -1,0 +1,233 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>音频字幕提取与翻译工具</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Desktop Workbench</p>
+          <h1 id="app-title">音频字幕提取与翻译工具</h1>
+          <p id="app-subtitle" class="muted"></p>
+        </div>
+        <div class="topbar-actions">
+          <div class="status-badge" id="environment-badge">环境待检查</div>
+          <button class="ghost-button" id="open-settings" type="button">&#9881; 设置</button>
+          <button class="ghost-button" id="open-output-top" type="button">打开输出目录</button>
+        </div>
+      </header>
+
+      <section class="summary-strip">
+        <div>
+          <span class="summary-label">当前任务</span>
+          <strong id="task-summary">未选择音频文件</strong>
+        </div>
+        <div>
+          <span class="summary-label">Python 后端</span>
+          <strong id="python-summary">检测中...</strong>
+        </div>
+        <div>
+          <span class="summary-label">输出目录</span>
+          <strong id="output-summary">output</strong>
+        </div>
+      </section>
+
+      <main class="workspace">
+        <aside class="panel panel-left">
+          <section class="card">
+            <div class="card-header">
+              <h2>任务配置</h2>
+              <p>一次选好音频和模式，后面就专注看日志和预览。</p>
+            </div>
+
+            <div class="dropzone" id="audio-dropzone" tabindex="0" aria-label="拖入音频文件或点击浏览">
+              <div class="dropzone-icon">AUDIO</div>
+              <div>
+                <strong id="audio-name">拖入音频或点击浏览</strong>
+                <p id="audio-path" class="muted">支持 mp3、wav、m4a、flac、aac</p>
+              </div>
+              <button class="secondary-button" id="browse-audio" type="button">浏览音频</button>
+            </div>
+            <p class="field-error" id="audio-error"></p>
+
+            <div class="field-group">
+              <label class="field-label">字幕模式</label>
+              <div class="segmented-control" id="mode-segmented">
+                <button data-mode="original" type="button">原文</button>
+                <button data-mode="translation" type="button">译文</button>
+                <button data-mode="bilingual" type="button" class="is-active">双语</button>
+              </div>
+            </div>
+
+            <div class="field-group" id="scene-group">
+              <label class="field-label" for="scene-input">翻译场景</label>
+              <input id="scene-input" list="scene-presets" class="text-input" />
+              <datalist id="scene-presets">
+                <option value="日常对话"></option>
+                <option value="排球教学场景"></option>
+                <option value="体育赛事"></option>
+                <option value="动漫字幕"></option>
+                <option value="医学讲解"></option>
+              </datalist>
+              <p class="field-help">场景会影响翻译用词、语气和术语倾向。</p>
+              <p class="field-error" id="scene-error"></p>
+            </div>
+
+            <div class="action-stack">
+              <button class="primary-button" id="start-task" type="button">开始生成</button>
+              <div class="button-row button-row-wrap">
+                <button class="ghost-button" id="retry-task" type="button">重试当前任务</button>
+                <button class="ghost-button" id="view-error-detail" type="button">查看错误详情</button>
+                <button class="ghost-button" id="reset-form" type="button">重新开始</button>
+              </div>
+            </div>
+          </section>
+        </aside>
+
+        <section class="panel panel-middle">
+          <section class="card status-card">
+            <div class="card-header">
+              <h2>任务状态</h2>
+              <p id="status-caption">等待开始</p>
+            </div>
+
+            <div class="stage-strip" id="stage-strip"></div>
+
+            <div class="metrics-grid">
+              <div class="metric">
+                <span>当前阶段</span>
+                <strong id="current-stage">待开始</strong>
+              </div>
+              <div class="metric">
+                <span>耗时</span>
+                <strong id="elapsed-time">00:00</strong>
+              </div>
+              <div class="metric metric-wide">
+                <span>最近消息</span>
+                <strong id="latest-message">请选择音频文件后开始。</strong>
+              </div>
+            </div>
+
+            <div class="hint-banner hidden" id="model-download-hint">
+              首次运行可能需要下载 Whisper 模型，耗时会明显变长。
+            </div>
+
+            <div class="error-banner hidden" id="error-banner"></div>
+          </section>
+
+          <section class="card log-card">
+            <div class="card-header card-header-row">
+              <div>
+                <h2>运行日志</h2>
+                <p>建议保持自动滚动，方便判断当前是否卡在下载或识别阶段。</p>
+              </div>
+              <div class="toolbar-inline">
+                <label class="checkbox">
+                  <input type="checkbox" id="auto-scroll" checked />
+                  自动滚动
+                </label>
+                <button class="ghost-button" id="copy-logs" type="button">复制日志</button>
+              </div>
+            </div>
+            <div class="log-list" id="log-list">
+              <div class="log-empty">日志会在任务开始后实时显示在这里。</div>
+            </div>
+          </section>
+        </section>
+
+        <section class="panel panel-right">
+          <section class="card result-card">
+            <div class="card-header">
+              <h2>输出结果</h2>
+              <p>完成后优先看这里，再去右下角检查字幕内容。</p>
+            </div>
+
+            <div class="result-empty" id="result-empty">结果文件还没生成。</div>
+            <div class="result-content hidden" id="result-content">
+              <div class="result-meta">
+                <strong id="result-file-name">--</strong>
+                <span id="result-file-path" class="muted">--</span>
+              </div>
+              <div class="button-row button-row-wrap">
+                <button class="ghost-button" id="open-result-file" type="button">打开文件</button>
+                <button class="ghost-button" id="open-result-dir" type="button">打开目录</button>
+                <button class="ghost-button" id="copy-result-path" type="button">复制路径</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="card preview-card">
+            <div class="card-header card-header-row preview-header">
+              <div>
+                <h2>字幕预览</h2>
+                <p id="preview-summary">支持搜索，双语模式会自动上下对照。</p>
+              </div>
+              <input id="preview-search" class="text-input preview-search" placeholder="搜索字幕内容" />
+            </div>
+
+            <div class="preview-list" id="preview-list">
+              <div class="preview-empty">生成字幕后，这里会显示可搜索的字幕预览。</div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal-overlay hidden" id="settings-modal" aria-hidden="true">
+      <div class="modal-dialog" id="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">LLM Settings</p>
+            <h2 id="settings-title">翻译模型设置</h2>
+            <p class="muted">保存到项目根目录 <code>.env</code>，不会影响当前正在运行的任务。</p>
+          </div>
+          <button class="icon-button" id="settings-close" type="button" aria-label="关闭设置">×</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="hint-banner hidden" id="settings-loading">正在读取当前配置...</div>
+          <div class="hint-banner" id="settings-next-task-hint">保存后新配置会在下一次任务开始时生效，无需重启界面。</div>
+          <div class="hint-banner hidden" id="settings-task-hint"></div>
+          <div class="success-banner hidden" id="settings-success"></div>
+          <div class="error-banner hidden" id="settings-error"></div>
+
+          <div class="field-group">
+            <label class="field-label" for="settings-model">LLM_MODEL</label>
+            <input id="settings-model" class="text-input" type="text" autocomplete="off" spellcheck="false" />
+            <p class="field-error" id="settings-model-error"></p>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="settings-base-url">LLM_BASE_URL</label>
+            <input id="settings-base-url" class="text-input" type="url" placeholder="https://example.com/v1" autocomplete="off" spellcheck="false" />
+            <p class="field-error" id="settings-base-url-error"></p>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="settings-api-key">LLM_API_KEY</label>
+            <div class="inline-input">
+              <input id="settings-api-key" class="text-input" type="password" autocomplete="off" spellcheck="false" />
+              <button class="ghost-button inline-input-action" id="settings-toggle-api-key" type="button">显示</button>
+            </div>
+            <p class="field-help" id="settings-api-key-help">可留空；留空会写入空值。</p>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="ghost-button" id="settings-cancel" type="button">取消</button>
+          <button class="primary-button" id="settings-save" type="button">保存设置</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="../shared/progress.js"></script>
+    <script src="../shared/validation.js"></script>
+    <script src="../shared/preview.js"></script>
+    <script src="./state.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

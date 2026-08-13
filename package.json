@@ -1,0 +1,54 @@
+{
+  "name": "audio-subtitle-electron-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron desktop workbench for the audio subtitle extraction and translation tool.",
+  "main": "electron/src/main/main.js",
+  "scripts": {
+    "start": "node electron/scripts/start.js",
+    "build:runtime": "node electron/scripts/build-runtime.js",
+    "dist:win": "npm run build:runtime && electron-builder --win nsis",
+    "dist:win:dir": "npm run build:runtime && electron-builder --win dir",
+    "test:electron": "node --test electron/tests/*.test.js",
+    "check:electron": "node --check electron/scripts/start.js && node --check electron/scripts/build-runtime.js && node --check electron/src/main/main.js && node --check electron/src/main/preload.js && node --check electron/src/main/python-task.js && node --check electron/src/main/runtime-paths.js && node --check electron/src/renderer/app.js && node --check electron/src/renderer/state.js && node --check electron/src/shared/progress.js && node --check electron/src/shared/validation.js && node --check electron/src/shared/preview.js"
+  },
+  "build": {
+    "appId": "com.local.audio-subtitle-tool",
+    "productName": "音频字幕提取与翻译工具",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".runtime-build",
+        "to": "runtime",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "音频字幕提取与翻译工具"
+    }
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3"
+  }
+}

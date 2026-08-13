@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import shutil
 import sys
@@ -7,7 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from config import AppConfig, get_app_root, get_runtime_root
+from config import (
+    AppConfig,
+    get_app_root,
+    get_bundle_root,
+    get_env_file_path,
+    get_runtime_root,
+)
 
 TRANSLATION_MODES = {"translation", "bilingual"}
 
@@ -30,23 +36,66 @@ class StartupReport:
         return any(item.level == "fatal" for item in self.items)
 
 
+def _unique_paths(paths: Iterable[Path]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path_obj in paths:
+        normalized = str(path_obj.resolve(strict=False)).lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(path_obj)
+    return result
+
+
+def _ffmpeg_root_candidates(project_root: Path) -> list[Path]:
+    sibling_runtime_root = project_root.parent / f"{project_root.name}_runtime"
+    dot_runtime_root = project_root / ".runtime"
+    configured_runtime_root = get_runtime_root()
+    bundle_root = get_bundle_root()
+    readonly_runtime_root = bundle_root.parent if bundle_root.name == "backend" else bundle_root
+
+    return _unique_paths(
+        [
+            configured_runtime_root / "tools" / "ffmpeg",
+            readonly_runtime_root / "tools" / "ffmpeg",
+            project_root / "tools" / "ffmpeg",
+            dot_runtime_root / "tools" / "ffmpeg",
+            sibling_runtime_root / "tools" / "ffmpeg",
+        ]
+    )
+
+
+def _find_ffmpeg_executable(project_root: Path) -> Path | None:
+    for ffmpeg_root in _ffmpeg_root_candidates(project_root):
+        if not ffmpeg_root.exists():
+            continue
+        for ffmpeg_exe in ffmpeg_root.rglob("ffmpeg.exe"):
+            return ffmpeg_exe
+        for ffmpeg_binary in ffmpeg_root.rglob("ffmpeg"):
+            return ffmpeg_binary
+    return None
+
+
+def _prepend_path(bin_dir: str) -> None:
+    path_entries = os.environ.get("PATH", "").split(os.pathsep)
+    normalized_entries = {entry.lower() for entry in path_entries if entry}
+    if bin_dir.lower() not in normalized_entries:
+        os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+
+
 def prepare_runtime_environment(project_root: Path | None = None) -> None:
     root = project_root or get_app_root()
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-    search_roots = [
-        get_runtime_root() / "tools" / "ffmpeg",
-        root / "tools" / "ffmpeg",
-    ]
-    for ffmpeg_root in search_roots:
-        if not ffmpeg_root.exists():
-            continue
-        for ffmpeg_exe in ffmpeg_root.rglob("ffmpeg.exe"):
-            bin_dir = str(ffmpeg_exe.parent)
-            path_entries = os.environ.get("PATH", "").split(os.pathsep)
-            if bin_dir not in path_entries:
-                os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
-            return
+    ffmpeg_exe = _find_ffmpeg_executable(root)
+    if ffmpeg_exe is None:
+        return
+
+    bin_dir = str(ffmpeg_exe.parent)
+    _prepend_path(bin_dir)
+    os.environ.setdefault("FFMPEG_BINARY", str(ffmpeg_exe))
+    os.environ.setdefault("IMAGEIO_FFMPEG_EXE", str(ffmpeg_exe))
 
 
 def _check_output_dir(output_dir: Path) -> StartupCheckItem:
@@ -68,6 +117,17 @@ def collect_startup_report(
     items: list[StartupCheckItem] = [
         StartupCheckItem("info", "python_executable", f"Python 可执行文件: {sys.executable}"),
         StartupCheckItem("info", "gui_backend", f"当前界面后端: {gui_backend}"),
+        StartupCheckItem("info", "whisper_model_selected", f"当前 Whisper 模型: {config.normalized_whisper_model_size}"),
+        StartupCheckItem(
+            "info",
+            "whisper_runtime",
+            f"Whisper 运行参数: device={config.whisper_device}, compute_type={config.whisper_compute_type}, beam_size={config.whisper_beam_size}",
+        ),
+        StartupCheckItem(
+            "info",
+            "word_timestamps_enabled",
+            f"词级时间对齐: {'开启' if config.whisper_word_timestamps else '关闭'}",
+        ),
     ]
 
     if gui_backend == "tkinter":
@@ -79,9 +139,9 @@ def collect_startup_report(
             )
         )
 
-    env_path = get_app_root() / ".env"
+    env_path = get_env_file_path()
     if env_path.exists():
-        items.append(StartupCheckItem("info", "dotenv_found", f"检测到配置文件: {env_path.name}"))
+        items.append(StartupCheckItem("info", "dotenv_found", f"检测到配置文件: {env_path}"))
     else:
         items.append(
             StartupCheckItem(
@@ -93,12 +153,44 @@ def collect_startup_report(
 
     if shutil.which("ffmpeg") is None:
         items.append(
-            StartupCheckItem("fatal", "ffmpeg_missing", "未检测到 ffmpeg，请先安装或把它加入 PATH。")
+            StartupCheckItem(
+                "fatal",
+                "ffmpeg_missing",
+                "未检测到 ffmpeg 运行时，应用环境可能不完整。",
+            )
         )
     else:
         items.append(StartupCheckItem("info", "ffmpeg_ready", "已检测到 ffmpeg。"))
 
     items.append(_check_output_dir(config.output_dir))
+
+    model_size = config.normalized_whisper_model_size.strip().lower()
+    if model_size == "tiny":
+        items.append(
+            StartupCheckItem(
+                "warning",
+                "whisper_tiny_quality",
+                "当前 Whisper 模型为 tiny，识别速度更快，但识别稳定性和术语准确率会明显下降。",
+            )
+        )
+
+    raw_source_language = (config.source_language or "").strip()
+    if raw_source_language:
+        items.append(
+            StartupCheckItem(
+                "info",
+                "source_language_locked",
+                f"已锁定源语言: {config.effective_source_language}",
+            )
+        )
+    else:
+        items.append(
+            StartupCheckItem(
+                "info",
+                "source_language_defaulted",
+                f"未显式设置源语言，当前默认按英文 ({config.effective_source_language}) 处理。",
+            )
+        )
 
     if subtitle_mode in TRANSLATION_MODES:
         if not config.llm_api_key.strip():
@@ -143,7 +235,7 @@ def _huggingface_cache_root() -> Path:
 
 
 def should_warn_about_model_download(config: AppConfig) -> bool:
-    model_value = config.whisper_model_size.strip()
+    model_value = config.normalized_whisper_model_size.strip()
     if not model_value:
         return False
 
@@ -194,10 +286,13 @@ def write_task_diagnostic_log(
         "success": success,
         "error_summary": error_summary,
         "config": {
-            "whisper_model_size": config.whisper_model_size,
+            "whisper_model_size": config.normalized_whisper_model_size,
             "whisper_device": config.whisper_device,
             "whisper_compute_type": config.whisper_compute_type,
             "source_language": config.source_language,
+            "effective_source_language": config.effective_source_language,
+            "whisper_beam_size": config.whisper_beam_size,
+            "whisper_word_timestamps": config.whisper_word_timestamps,
             "llm_api_key_configured": bool(config.llm_api_key.strip()),
             "llm_base_url_configured": bool(config.llm_base_url.strip()),
             "llm_model_configured": bool(config.llm_model.strip()),
