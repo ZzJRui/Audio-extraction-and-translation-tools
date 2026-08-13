@@ -65,7 +65,7 @@ test("runBackendTask surfaces stderr when backend exits with failure", async () 
       }),
     (error) => {
       assert.ok(error instanceof BackendTaskError);
-      assert.match(error.message, /找不到 ffmpeg/);
+      assert.match(error.message, /应用环境异常/);
       assert.equal(error.stderrText, "RuntimeError: 找不到 ffmpeg");
       return true;
     }
